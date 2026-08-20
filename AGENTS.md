@@ -69,3 +69,9 @@ via /etc/nginx/.htpasswd).
   branch name; the Manager merges that branch into `master` in the main
   checkout (e.g. feat/enter-submits-ticket → 4a1c024).
 - The default branch is `master`, not `main`.
+
+- GitHub push blocker: a GitHub token exists in the agent-server secrets
+  store, BUT live API keys (`.session-key`, `.automation-key`) are committed
+  in git history and not gitignored. Do NOT push this repo to any remote
+  until keys are rotated/history rewritten - pushing would leak live
+  credentials (user decision pending on ticket 93b58130).
