@@ -61,6 +61,14 @@ via /etc/nginx/.htpasswd).
     uploads - re-copy `nginx/vibe.apps.canvas.rbren.io` to sites-available
     and reload nginx when deploying this feature.
 
+- **Ticket titles**: tickets have a nullable `title` column, included in every
+  ticket dict (board AND manager snapshot) and settable via the manager PATCH
+  endpoint (`/api/manager/tickets/<id>`, trimmed; blank clears it). The SPA
+  renders it as a bold heading on kanban cards and in the drawer. Convention
+  (enforced via the Manager prompt in automation/main.py, "Title rule"): one
+  emoji prefix + ONE or TWO words, NEVER more than two words (e.g.
+  "🐛 Login fix"); the manager titles every untitled ticket it touches.
+  Tests: `tests/test_ticket_title.py`.
 - **Reopen on new request**: `POST /api/tickets/<id>/entries` with
   author=user on a finished/needs_input ticket immediately sets it back to
   pending (bottom of the pending column) so the manager picks it up —

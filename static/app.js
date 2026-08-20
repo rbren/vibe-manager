@@ -238,6 +238,13 @@ function cardEl(t) {
   el.dataset.id = t.id;
   el.draggable = t.status !== "verified";
 
+  if (t.title) {
+    const title = document.createElement("div");
+    title.className = "card-title";
+    title.textContent = t.title;
+    el.appendChild(title);
+  }
+
   const body = document.createElement("div");
   body.className = "card-body";
   body.textContent = firstEntry;
@@ -497,6 +504,9 @@ function renderDrawer() {
   st.textContent = STATUS_LABEL[t.status];
   st.dataset.s = t.status;
   $("#drawer-id").textContent = `#${t.id}`;
+  const title = $("#drawer-title");
+  title.hidden = !t.title;
+  title.textContent = t.title || "";
 
   const links = $("#drawer-links");
   links.innerHTML = "";

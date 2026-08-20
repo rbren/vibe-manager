@@ -355,6 +355,7 @@ def build_manager_prompt(ws: dict, tickets: list[dict]) -> str:
             {
                 "id": t["id"],
                 "status": t["status"],
+                "title": t.get("title"),
                 "priority_rank": t["sort_order"],
                 "conversation_id": t.get("conversation_id"),
                 "conversation_status": t.get("conv_status"),
@@ -408,7 +409,7 @@ You manage a kanban queue of vibecoding tickets and a pool of worker agent conve
 ## APIs at your disposal (use curl from the terminal)
 
 Vibe ticket API (no auth needed from this machine): base `{VIBE_API}`
-- `PATCH {VIBE_API}/api/manager/tickets/<ticket_id>` with JSON body; fields (all optional): `status` (pending|in_progress|needs_input|finished), `conversation_id`, `pr_url`, `manager_note` (short one-liner shown on the card; ALSO the contract for deferrals — see below), `dispatched_entry_count` (int — set to the number of entries you have relayed to the worker so far), `append_entry` (string — appends a visible manager comment to the ticket thread).
+- `PATCH {VIBE_API}/api/manager/tickets/<ticket_id>` with JSON body; fields (all optional): `status` (pending|in_progress|needs_input|finished), `title` (see the title rule below), `conversation_id`, `pr_url`, `manager_note` (short one-liner shown on the card; ALSO the contract for deferrals — see below), `dispatched_entry_count` (int — set to the number of entries you have relayed to the worker so far), `append_entry` (string — appends a visible manager comment to the ticket thread).
 - `GET {VIBE_API}/api/manager/workspaces/{WORKSPACE_ID}/snapshot` to re-read the board.
 
 Worker dispatch (via the vibe API — it handles agent config; workers ALWAYS run in git worktrees, never in the main checkout):
@@ -438,7 +439,8 @@ Agent server API (read-only inspection): base `{AGENT_SERVER}`, header `X-Sessio
 5. Worker task prompts must be self-contained: the full ticket text (all user entries), the project path, a reminder to read AGENTS.md first, the push-mode instructions above (branch+PR, or push directly to main), and — in PR mode — to report the PR URL in their final message.
    - **Attachments**: tickets may carry file/image attachments (see each ticket's `attachments` array). Each has a stable absolute `path` on this machine, readable from worker worktrees. In the worker prompt, list every attachment as `<filename> (<content_type>) at <path>` and tell the worker to read/view it from that path (agents can view images with the file viewer). Workers must `cp` an attachment into their worktree only if it should become part of the repo. Never inline file contents into the prompt yourself.
 6. Update every card you acted on: status, conversation_id, manager_note (short, user-facing), dispatched_entry_count, and append_entry comments where the user needs context. Every ticket you dispatch MUST get its conversation_id set so the card links to its conversation.
-7. Do not wait for workers to finish — dispatch and exit. You will be re-invoked automatically when statuses change.
+7. **Title rule**: every ticket you touch that has a null `title` MUST get one via PATCH. Format: one emoji prefix + ONE or TWO words, NEVER more than two words (e.g. "🐛 Login fix", "🎨 Dark mode", "📎 Attachments"). Keep existing titles unless the ticket's scope clearly changed.
+8. Do not wait for workers to finish — dispatch and exit. You will be re-invoked automatically when statuses change.
 
 Be decisive and terse. When done, summarize what you dispatched/updated in one short final message."""
 

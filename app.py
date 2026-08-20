@@ -86,6 +86,7 @@ def init_db() -> None:
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL REFERENCES workspaces(id),
                 status TEXT NOT NULL DEFAULT 'pending',
+                title TEXT,
                 sort_order REAL NOT NULL DEFAULT 0,
                 conversation_id TEXT,
                 pr_url TEXT,
@@ -117,6 +118,8 @@ def init_db() -> None:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(tickets)")}
         if "verified_at" not in cols:
             conn.execute("ALTER TABLE tickets ADD COLUMN verified_at REAL")
+        if "title" not in cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN title TEXT")
 
 
 init_db()
@@ -161,6 +164,7 @@ class Reorder(BaseModel):
 
 class ManagerPatch(BaseModel):
     status: str | None = None
+    title: str | None = None
     conversation_id: str | None = None
     pr_url: str | None = None
     manager_note: str | None = None
@@ -579,6 +583,8 @@ def manager_patch_ticket(ticket_id: str, req: ManagerPatch):
             if req.status not in STATUSES:
                 raise HTTPException(400, "bad status")
             updates["status"] = req.status
+        if req.title is not None:
+            updates["title"] = req.title.strip() or None
         if req.conversation_id is not None:
             updates["conversation_id"] = req.conversation_id
         if req.pr_url is not None:
