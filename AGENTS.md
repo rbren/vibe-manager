@@ -116,3 +116,8 @@ via /etc/nginx/.htpasswd).
   in git history and not gitignored. Do NOT push this repo to any remote
   until keys are rotated/history rewritten - pushing would leak live
   credentials (user decision pending on ticket 93b58130).
+- Push-to-main with no git remote: this repo currently has NO `origin`, and
+  master is checked out in the main checkout, so workers in worktrees cannot
+  update master. Convention: workers commit on a named branch and report
+  branch+commit; the Manager fast-forwards/merges master in the main checkout
+  and restarts `vibe-manager.service` to deploy.
