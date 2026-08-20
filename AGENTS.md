@@ -8,7 +8,7 @@ via /etc/nginx/.htpasswd).
 
 ## Architecture
 
-- `app.py` — FastAPI backend on 127.0.0.1:18300 (systemd: `vibe-manager.service`).
+- `app.py` â€” FastAPI backend on 127.0.0.1:18300 (systemd: `vibe-manager.service`).
   SQLite at `./vibe.db`. Serves the SPA from `static/` under `/assets`.
   - Public API (`/api/...`): workspace picker, settings (max_concurrent,
     push_mode pr|main), ticket CRUD (append-only entries), priority reorder.
@@ -19,17 +19,17 @@ via /etc/nginx/.htpasswd).
   - Selecting a workspace bootstraps (or refreshes, incl. tarball) a per-
     workspace cron automation named `vibe-manager:<id>:<name>` in the
     automation backend (every minute).
-- `automation/main.py` — deterministic poller, packaged into the automation
+- `automation/main.py` â€” deterministic poller, packaged into the automation
   tarball with a per-workspace `config.json`. Each run: gathers board +
-  conversation statuses, applies mechanical transitions (PR merged → finished,
-  push-to-main verified → finished), computes a fingerprint + actionable
+  conversation statuses, applies mechanical transitions (PR merged â†’ finished,
+  push-to-main verified â†’ finished), computes a fingerprint + actionable
   signals, and only kicks off a Manager agent conversation when the
   fingerprint changed (or a retry-safe signal persists >10 min). State lives
   in the automation KV store.
   - Deferral contract: if the Manager deliberately does NOT dispatch a pending
     ticket it must set `manager_note`, which suppresses the dispatchable
     signal until the board changes.
-- `static/` — vanilla JS SPA (no build step). Kanban columns: pending,
+- `static/` â€” vanilla JS SPA (no build step). Kanban columns: pending,
   in_progress, needs_input, finished. Drag vertically to reprioritize; click
   a card for the append-only drawer; each card links to its conversation.
 
@@ -43,15 +43,24 @@ via /etc/nginx/.htpasswd).
   `GET /api/settings` with header `X-Expose-Secrets: encrypted` +
   `secrets_encrypted: true`, and `tools` forced to `null` (the stored value
   `[]` means bare agent; `null` resolves the default exec toolset). Using
-  `agent_profile_id` yields an agent with NO tools — don't.
+  `agent_profile_id` yields an agent with NO tools â€” don't.
 - Auth keys are read at service start from `.session-key` / `.automation-key`
   in the repo root (falling back to env). These are extracted from the live
   agent-server process env; static copies go stale.
 - Automation backend: 127.0.0.1:18001, header X-Session-API-Key. Agent
-  server: 127.0.0.1:18000. Conversation search endpoint is unusably slow —
+  server: 127.0.0.1:18000. Conversation search endpoint is unusably slow â€”
   always GET conversations by ID.
 - systemd unit: `systemd/vibe-manager.service` (copy to /etc/systemd/system
   and `systemctl daemon-reload` after edits). nginx site:
   `nginx/vibe.apps.canvas.rbren.io` (copy to sites-available).
 - After editing `automation/main.py`, re-select the workspace in the UI (or
   POST /api/workspaces) to re-upload the tarball to existing automations.
+
+- No usable GitHub credentials on this machine: `origin` remote has no URL,
+  no GITHUB_PERSONAL_ACCESS_TOKEN, and `gh` is not logged in. PR mode is
+  therefore broken. Push mode is currently **main**, but workers in worktrees
+  cannot push to the checked-out `master` branch either — so the convention
+  is: workers commit on a feature branch in their worktree and report the
+  branch name; the Manager merges that branch into `master` in the main
+  checkout (e.g. feat/enter-submits-ticket → 4a1c024).
+- The default branch is `master`, not `main`.
