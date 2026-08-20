@@ -24,6 +24,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 CONFIG = json.loads((Path(__file__).parent / "config.json").read_text())
@@ -145,23 +146,33 @@ def get_secret(name: str) -> str:
         return ""
 
 
-def conversation_info(conv_id: str) -> tuple[str, dict]:
-    """Return (execution_status, tags) for a conversation."""
+def conversation_info(conv_id: str) -> dict:
+    """Return {status, tags, created_at_ts} for a conversation."""
     try:
         d = agent(f"/api/conversations/{conv_id}?include_skills=false")
-        return d.get("execution_status", "unknown"), d.get("tags") or {}
+        created = d.get("created_at") or ""
+        try:
+            created_ts = datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            created_ts = 0.0
+        return {
+            "status": d.get("execution_status", "unknown"),
+            "tags": d.get("tags") or {},
+            "created_at_ts": created_ts,
+        }
     except urllib.error.HTTPError as exc:
-        return ("deleted" if exc.code == 404 else f"error_{exc.code}"), {}
+        status = "deleted" if exc.code == 404 else f"error_{exc.code}"
+        return {"status": status, "tags": {}, "created_at_ts": 0.0}
     except Exception:  # noqa: BLE001
-        return "unreachable", {}
+        return {"status": "unreachable", "tags": {}, "created_at_ts": 0.0}
 
 
 def conversation_status(conv_id: str) -> str:
-    return conversation_info(conv_id)[0]
+    return conversation_info(conv_id)["status"]
 
 
-def find_running_manager(state: dict, ws: dict) -> str | None:
-    """Return the id of a still-running manager conversation for this workspace.
+def find_running_manager(state: dict, ws: dict) -> tuple[str, float] | None:
+    """Return (conv_id, started_ts) of a still-running manager for this workspace.
 
     Checks the KV-tracked id first, then the id recorded on the workspace row
     (survives KV state loss). Tags verify it really is this workspace's manager.
@@ -173,14 +184,16 @@ def find_running_manager(state: dict, ws: dict) -> str | None:
     if row_conv and row_conv not in candidates:
         candidates.append(row_conv)
     for conv_id in candidates:
-        status, tags = conversation_info(conv_id)
-        if status != "running":
+        info = conversation_info(conv_id)
+        if info["status"] != "running":
             continue
         # The KV-tracked id is trusted; a row-recorded id must carry our tags.
         if conv_id == state.get("manager_conversation_id") or (
-            tags.get("viberole") == "manager" and tags.get("workspace") == WORKSPACE_PATH
+            info["tags"].get("viberole") == "manager"
+            and info["tags"].get("workspace") == WORKSPACE_PATH
         ):
-            return conv_id
+            started = state.get("manager_started_at") or info["created_at_ts"]
+            return conv_id, started
     return None
 
 
@@ -215,6 +228,8 @@ def enrich(board: dict) -> tuple[dict, list[dict]]:
     gh_token = None
     tickets = []
     for t in board["tickets"]:
+        if t["status"] == "verified":  # terminal; user signed off — nothing to poll or manage
+            continue
         conv_status = conversation_status(t["conversation_id"]) if t.get("conversation_id") else None
         prs = None
         if t.get("pr_url") and t["status"] != "finished":
@@ -412,17 +427,16 @@ def main() -> None:
     # If a manager conversation is already running for this workspace, bail
     # out. Checks both the KV-tracked id and the workspace-row id (tag-verified),
     # so a lost KV state can't cause overlapping managers.
-    running_mgr = find_running_manager(state, board["workspace"])
-    if running_mgr:
-        started = state.get("manager_started_at") or 0
+    running = find_running_manager(state, board["workspace"])
+    if running:
+        conv_id, started = running
         if time.time() - started < MANAGER_STALE_SECONDS:
-            print(f"manager conversation {running_mgr} still running — skipping")
+            print(f"manager conversation {conv_id} still running — skipping")
             fire_callback()
             return
-        print(f"manager conversation {running_mgr} exceeded stale limit — proceeding")
-    prev_conv = state.get("manager_conversation_id")
-    if prev_conv and prev_conv != running_mgr:
-        print(f"previous manager conversation {prev_conv} ended")
+        print(f"manager conversation {conv_id} exceeded stale limit — proceeding")
+    elif state.get("manager_conversation_id"):
+        print(f"previous manager conversation {state['manager_conversation_id']} ended")
         state["last_manager_finished_at"] = time.time()
     state["manager_conversation_id"] = None
 

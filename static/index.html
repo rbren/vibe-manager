@@ -33,6 +33,7 @@
         <button data-mode="main" class="seg-btn">push to main</button>
       </div>
     </div>
+    <button id="show-verified" class="toggle-verified" hidden>✓ show verified</button>
     <div class="mgr-badge" id="mgr-badge" hidden title="Manager automation active for this workspace">
       <span class="pulse"></span> manager
     </div>
@@ -73,6 +74,10 @@
       <div class="col" data-status="finished">
         <div class="col-head"><span class="col-dot"></span> finished <span class="col-count"></span></div>
         <div class="col-cards" data-status="finished"></div>
+      </div>
+      <div class="col" data-status="verified" hidden>
+        <div class="col-head"><span class="col-dot"></span> verified <span class="col-count"></span></div>
+        <div class="col-cards" data-status="verified"></div>
       </div>
     </div>
   </section>
