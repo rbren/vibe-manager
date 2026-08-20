@@ -107,22 +107,24 @@ via /etc/nginx/.htpasswd).
 - After editing `automation/main.py`, re-select the workspace in the UI (or
   POST /api/workspaces) to re-upload the tarball to existing automations.
 
-- No usable GitHub credentials on this machine: `origin` remote has no URL,
-  no GITHUB_PERSONAL_ACCESS_TOKEN, and `gh` is not logged in. PR mode is
-  therefore broken. Push mode is currently **main**, but workers in worktrees
-  cannot push to the checked-out `master` branch either — so the convention
-  is: workers commit on a feature branch in their worktree and report the
-  branch name; the Manager merges that branch into `master` in the main
-  checkout (e.g. feat/enter-submits-ticket → 4a1c024).
+- Git remote: `origin` is https://github.com/rbren/vibe-manager (PRIVATE
+  repo; push-to-master allowed). The remote URL embeds a GitHub token pulled
+  from the agent-server secrets store (`GET
+  /api/settings/secrets/GITHUB_PERSONAL_ACCESS_TOKEN` with the session key) —
+  never commit the token; refresh the URL from the secrets store if it stops
+  authenticating.
 - The default branch is `master`, not `main`.
+- History was rewritten (git filter-repo, 2026-05-21) to purge
+  `.session-key` / `.automation-key`, which are now gitignored and exist only
+  on disk (the service reads them from the repo root at startup — do not
+  delete them). Never commit these files again.
+- Workers in worktrees cannot push to the checked-out `master` branch, so the
+  convention remains: workers commit on a feature branch in their worktree
+  and report branch+commit; the Manager merges that branch into `master` in
+  the main checkout, pushes to origin, and restarts `vibe-manager.service`
+  to deploy.
 
-- GitHub push blocker: a GitHub token exists in the agent-server secrets
-  store, BUT live API keys (`.session-key`, `.automation-key`) are committed
-  in git history and not gitignored. Do NOT push this repo to any remote
-  until keys are rotated/history rewritten - pushing would leak live
-  credentials (user decision pending on ticket 93b58130).
-- Push-to-main with no git remote: this repo currently has NO `origin`, and
-  master is checked out in the main checkout, so workers in worktrees cannot
-  update master. Convention: workers commit on a named branch and report
-  branch+commit; the Manager fast-forwards/merges master in the main checkout
-  and restarts `vibe-manager.service` to deploy.
+- History-rewrite serialization: while a git history rewrite (filter-repo) is
+  in flight (ticket 93b58130), do NOT dispatch any other workers — worktree
+  branches based on pre-rewrite hashes get orphaned and merging them would
+  reintroduce the purged secret blobs. Queue everything behind the rewrite.
