@@ -1,5 +1,12 @@
 # vibe-manager
 
+> **Workspace assignment correction (2026-05-21):** the tag/backfill approach
+> (ede340a, scripts/backfill_workspace_tags.py) was REJECTED by the user. The
+> agent-server conversation-create POST has a dedicated field that sets the
+> workspace directory (see how agent-canvas in openhands/openhands builds its
+> POST /api/conversations body). app.py `POST /api/manager/conversations` and
+> automation/main.py must pass that field on every conversation they create.
+
 Vibecoding work manager: kanban SPA + per-workspace "Manager" automation that
 dispatches OpenHands worker agent conversations.
 
