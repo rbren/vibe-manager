@@ -25,7 +25,12 @@ via /etc/nginx/.htpasswd).
   push-to-main verified â†’ finished), computes a fingerprint + actionable
   signals, and only kicks off a Manager agent conversation when the
   fingerprint changed (or a retry-safe signal persists >10 min). State lives
-  in the automation KV store.
+  in the automation KV store, including a `conv_statuses` map (conversation_id
+  → execution_status) for every tracked ticket conversation; a conversation
+  running while its ticket is NOT in_progress (e.g. the user manually messaged
+  a needs_input worker) raises an `agent-resumed` signal so the manager moves
+  the card back to in_progress. Tests:
+  `python tests/test_automation_conv_state.py` (pure stdlib).
   - Deferral contract: if the Manager deliberately does NOT dispatch a pending
     ticket it must set `manager_note`, which suppresses the dispatchable
     signal until the board changes.

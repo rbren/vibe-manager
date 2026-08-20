@@ -6,7 +6,10 @@ Deterministic phase (pure stdlib, no LLM):
      PR states (GitHub API).
   3. Apply mechanical transitions: PR open -> needs_input, PR merged -> finished.
   4. Fingerprint the enriched state; compare with the KV store; compute
-     actionable "signals" (new entries, dispatchable tickets, finished workers).
+     actionable "signals" (new entries, dispatchable tickets, finished workers,
+     manually resumed agents). Per-conversation execution statuses are also
+     persisted in the state so manual interventions (e.g. the user messaging a
+     needs_input worker directly) are tracked between runs.
 
 Only when the fingerprint changed AND something is actionable does it kick off
 the Manager agent conversation, which does the smart work: dispatching /
@@ -316,7 +319,27 @@ def compute_signals(ws: dict, tickets: list[dict]) -> tuple[list[str], list[str]
             sig = f"worker-done:{t['id']}"
             signals.append(sig)
             retry_safe.append(sig)
+        # Conversation running but the board says otherwise (e.g. the user
+        # manually sent a message to a needs_input worker): the agent is
+        # working again — the manager should move the card to in_progress.
+        if (
+            t["status"] != "in_progress"
+            and t.get("conversation_id")
+            and t.get("conv_status") == "running"
+        ):
+            sig = f"agent-resumed:{t['id']}"
+            signals.append(sig)
+            retry_safe.append(sig)
     return signals, retry_safe
+
+
+def conv_statuses(tickets: list[dict]) -> dict[str, str]:
+    """Map conversation_id -> execution_status for every tracked ticket conversation."""
+    return {
+        t["conversation_id"]: t.get("conv_status") or "unknown"
+        for t in tickets
+        if t.get("conversation_id")
+    }
 
 
 # ------------------------------------------------------------- manager kickoff
@@ -398,6 +421,7 @@ Agent server API (read-only inspection): base `{AGENT_SERVER}`, header `X-Sessio
 ## Your job this run
 1. Read `AGENTS.md` in `{WORKSPACE_PATH}` (create it if missing) so you understand the project architecture. Keep it up to date: when finished tickets reveal new architecture/conventions, append concise notes so future workers benefit.
 2. For every ticket whose worker conversation just ended (conversation_status finished/idle but ticket still in_progress): read its final response. If it opened a PR, PATCH pr_url + status needs_input. In push-to-main mode verify the push landed on main and mark finished. If the worker failed or stalled (error/stuck), decide: send a corrective follow-up message, or mark needs_input with an explanatory append_entry asking the user for guidance.
+   - Conversely, if a ticket's conversation_status is **running** but the ticket is needs_input/finished/pending, the user likely resumed the agent manually (sent it a message directly). Set the ticket status back to in_progress (and clear a stale manager_note) so the board reflects that the agent is working again.
 3. For tickets with NEW user entries beyond dispatched_entry_count:
    - If the ticket already has a conversation, prefer **reusing it**: send the new request as a follow-up message to that conversation, bump dispatched_entry_count to the current entry count, and ensure status is in_progress.
    - A finished/needs_input ticket that receives a new entry moves back to in_progress once you dispatch the follow-up.
@@ -456,6 +480,10 @@ def main() -> None:
     apply_mechanical_transitions(tickets)
     fp = fingerprint(ws, tickets)
     signals, retry_safe = compute_signals(ws, tickets)
+    # Track each conversation's execution status so manual interventions
+    # (e.g. the user messaging a needs_input worker, flipping it back to
+    # running) are visible in the persisted state between runs.
+    state["conv_statuses"] = conv_statuses(tickets)
 
     changed = fp != state.get("fingerprint")
     # Safety net: if retry-safe signals persist but nothing changed (e.g. a
