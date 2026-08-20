@@ -529,6 +529,31 @@ def automation_status(ws_id: str):
     return out
 
 
+@app.post("/api/workspaces/{ws_id}/automation/trigger")
+def trigger_automation(ws_id: str):
+    """Manually dispatch a manager automation run (e.g. from the status badge)."""
+    with db() as conn:
+        ws_row = conn.execute("SELECT * FROM workspaces WHERE id=?", (ws_id,)).fetchone()
+    if not ws_row:
+        raise HTTPException(404, "workspace not found")
+    automation_id = workspace_dict(ws_row).get("automation_id")
+    if not automation_id:
+        raise HTTPException(409, "manager automation not configured for this workspace")
+    try:
+        with httpx.Client(base_url=AUTOMATION_API, headers=_automation_headers(), timeout=10) as client:
+            r = client.post(f"/v1/{automation_id}/dispatch")
+            r.raise_for_status()
+            run = r.json()
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"automation dispatch failed: {exc}")
+    log.info("manually dispatched manager automation %s (run %s)", automation_id, run.get("id"))
+    return {
+        "dispatched": True,
+        "automation_id": automation_id,
+        "run": {k: run.get(k) for k in ("id", "status", "created_at")},
+    }
+
+
 # ----------------------------------------------------------------------- board
 
 @app.get("/api/workspaces/{ws_id}/board")

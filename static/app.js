@@ -239,6 +239,24 @@ function fmtAgo(iso) {
   return `${Math.round(s / 86400)}d ago`;
 }
 
+const TRIGGER_HINT = "click to run the manager now";
+
+async function triggerManager() {
+  if (!state.ws || !state.ws.automation_id) return;
+  const badge = $("#mgr-badge");
+  if (badge.classList.contains("triggering")) return;
+  badge.classList.add("triggering");
+  $("#mgr-text").textContent = "manager: triggering…";
+  try {
+    await api(`/api/workspaces/${state.ws.id}/automation/trigger`, { method: "POST" });
+    toast("manager run triggered ▶");
+  } catch (e) {
+    toast(`manager trigger failed: ${e.message}`, true);
+  }
+  badge.classList.remove("triggering");
+  refreshAutomation();
+}
+
 function renderMgrBadge() {
   const badge = $("#mgr-badge");
   if (!state.ws || !state.ws.automation_id) { badge.hidden = true; return; }
@@ -246,9 +264,10 @@ function renderMgrBadge() {
   badge.classList.remove("ok", "err", "paused");
   const a = state.automation;
   const text = $("#mgr-text");
+  if (badge.classList.contains("triggering")) return;
   if (!a || a.automation_id !== state.ws.automation_id) {
     text.textContent = "manager";
-    badge.title = "Manager automation active for this workspace";
+    badge.title = `Manager automation active for this workspace\n${TRIGGER_HINT}`;
     return;
   }
   const lr = a.last_run;
@@ -279,9 +298,10 @@ function renderMgrBadge() {
   }
   if (a.last_triggered_at) tip.push(`last triggered ${fmtAgo(a.last_triggered_at)}`);
   if (a.manager_conversation) tip.push(`manager agent: ${a.manager_conversation.status}`);
+  tip.push(TRIGGER_HINT);
   text.textContent = label;
   if (cls) badge.classList.add(cls);
-  badge.title = tip.join("\n") || "Manager automation active for this workspace";
+  badge.title = tip.join("\n");
 }
 
 function render() {
@@ -733,6 +753,10 @@ function wire() {
   renderVerifiedToggle();
 
   $("#theme-toggle").addEventListener("click", toggleTheme);
+  $("#mgr-badge").addEventListener("click", triggerManager);
+  $("#mgr-badge").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); triggerManager(); }
+  });
   applyTheme();
 }
 

@@ -118,6 +118,14 @@ via /etc/nginx/.htpasswd).
   port via VIBE_AUTOMATION_API; run with the service venv ŌĆö note tests
   import app.py, which needs `.session-key`/`.automation-key` in the repo
   root, so run them from the main checkout).
+  - **Manual trigger**: clicking the badge (or Enter/Space, it's a
+    role=button) POSTs `/api/workspaces/<id>/automation/trigger`, which
+    proxies POST `/v1/<automation_id>/dispatch` on the automation backend
+    (creates a PENDING run picked up immediately by the dispatcher) ŌĆö 404
+    unknown workspace, 409 if no automation configured, 502 if the backend
+    call fails. The SPA shows "manager: triggering" + `.mgr-badge.triggering`
+    (disabled) while in flight, toasts the outcome, then refreshes the badge.
+    Tests: `tests/test_trigger_automation.py`.
 - **URL routing**: selecting a workspace pushes `/workspace/<name>` (name =
   directory basename, encodeURIComponent'd) via history.pushState; popstate
   re-selects. On load the SPA prefers the URL's workspace over
