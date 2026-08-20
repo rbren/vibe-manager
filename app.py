@@ -408,24 +408,10 @@ def health():
 
 @app.get("/api/workspaces")
 def list_workspaces():
-    """Available workspaces (from agent-server parents) + already-selected ones."""
+    """Available workspaces (agent-server registered) + already-selected ones."""
     available: list[dict] = []
     try:
         data = agent_get("/api/workspaces")
-        parents = data.get("workspaceParents", [])
-        for parent in parents:
-            ppath = Path(parent["path"])
-            if not ppath.is_dir():
-                continue
-            for child in sorted(ppath.iterdir()):
-                if child.is_dir() and not child.name.startswith((".", "_")):
-                    available.append(
-                        {
-                            "path": str(child),
-                            "name": child.name,
-                            "is_git": (child / ".git").exists(),
-                        }
-                    )
         for ws in data.get("workspaces", []):
             p = ws.get("path")
             if p and not any(a["path"] == p for a in available):
