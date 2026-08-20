@@ -1,0 +1,4 @@
+.venv/
+vibe.db
+__pycache__/
+*.pyc

@@ -1,0 +1,16 @@
+[Unit]
+Description=Vibe work manager (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/git/vibe-manager
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/git/vibe-manager/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 18300
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

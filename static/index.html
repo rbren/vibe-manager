@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vibe — work manager</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-glyph">▞▞</span>
+    <span class="brand-name">vibe</span>
+    <span class="brand-sub">work manager</span>
+  </div>
+
+  <div class="topbar-controls">
+    <div class="control">
+      <label for="workspace-select">workspace</label>
+      <select id="workspace-select"><option value="">— pick a workspace —</option></select>
+    </div>
+    <div class="control" id="ctl-concurrency" hidden>
+      <label for="max-concurrent">max&nbsp;concurrent</label>
+      <input id="max-concurrent" type="number" min="1" max="20" value="3">
+    </div>
+    <div class="control" id="ctl-pushmode" hidden>
+      <label>changes</label>
+      <div class="seg" id="push-mode">
+        <button data-mode="pr" class="seg-btn">pull request</button>
+        <button data-mode="main" class="seg-btn">push to main</button>
+      </div>
+    </div>
+    <div class="mgr-badge" id="mgr-badge" hidden title="Manager automation active for this workspace">
+      <span class="pulse"></span> manager
+    </div>
+  </div>
+</header>
+
+<main id="main">
+  <section id="empty-state">
+    <div class="empty-inner">
+      <div class="empty-glyph">▞▞</div>
+      <h1>Pick a workspace to start vibing</h1>
+      <p>Selecting a workspace spins up a <strong>Manager</strong> automation that watches
+         your ticket queue every minute, dispatches worker agents into git worktrees,
+         and moves cards across the board as work progresses.</p>
+    </div>
+  </section>
+
+  <section id="board-wrap" hidden>
+    <form id="new-ticket-form" autocomplete="off">
+      <textarea id="new-ticket-body" rows="2"
+        placeholder="Describe what you want built… (⌘⏎ to submit)"></textarea>
+      <button type="submit" id="new-ticket-submit">submit&nbsp;ticket&nbsp;→</button>
+    </form>
+
+    <div class="board" id="board">
+      <div class="col" data-status="pending">
+        <div class="col-head"><span class="col-dot"></span> pending <span class="col-count"></span></div>
+        <div class="col-cards" data-status="pending"></div>
+      </div>
+      <div class="col" data-status="in_progress">
+        <div class="col-head"><span class="col-dot"></span> in progress <span class="col-count"></span></div>
+        <div class="col-cards" data-status="in_progress"></div>
+      </div>
+      <div class="col" data-status="needs_input">
+        <div class="col-head"><span class="col-dot"></span> needs input <span class="col-count"></span></div>
+        <div class="col-cards" data-status="needs_input"></div>
+      </div>
+      <div class="col" data-status="finished">
+        <div class="col-head"><span class="col-dot"></span> finished <span class="col-count"></span></div>
+        <div class="col-cards" data-status="finished"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<aside id="drawer" hidden>
+  <div class="drawer-backdrop" id="drawer-backdrop"></div>
+  <div class="drawer-panel">
+    <div class="drawer-head">
+      <div>
+        <span class="drawer-status" id="drawer-status"></span>
+        <span class="drawer-id" id="drawer-id"></span>
+      </div>
+      <button class="drawer-close" id="drawer-close" aria-label="close">✕</button>
+    </div>
+    <div class="drawer-links" id="drawer-links"></div>
+    <div class="drawer-note" id="drawer-note" hidden></div>
+    <div class="drawer-thread" id="drawer-thread"></div>
+    <form id="append-form">
+      <textarea id="append-body" rows="3" placeholder="Add another request… (append only)"></textarea>
+      <button type="submit">append&nbsp;→</button>
+    </form>
+  </div>
+</aside>
+
+<div id="toast" hidden></div>
+<script src="/assets/app.js"></script>
+</body>
+</html>
