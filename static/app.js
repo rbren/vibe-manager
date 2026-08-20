@@ -590,15 +590,10 @@ async function patchWorkspace(patch) {
 function ticketKeydown(submit) {
   return (e) => {
     if (e.key !== "Enter") return;
-    if (e.metaKey || e.ctrlKey) {
-      // Cmd/Ctrl+Enter inserts a newline (browsers don't by default)
-      e.preventDefault();
-      const ta = e.target;
-      ta.setRangeText("\n", ta.selectionStart, ta.selectionEnd, "end");
-    } else if (!e.shiftKey) {
-      e.preventDefault();
-      submit();
-    }
+    // Shift+Enter inserts a newline; Enter and Cmd/Ctrl+Enter submit.
+    if (e.shiftKey) return;
+    e.preventDefault();
+    submit();
   };
 }
 
