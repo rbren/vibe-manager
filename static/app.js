@@ -398,18 +398,29 @@ async function patchWorkspace(patch) {
 
 /* ------------------------------------------------------------------ init */
 
+function ticketKeydown(submit) {
+  return (e) => {
+    if (e.key !== "Enter") return;
+    if (e.metaKey || e.ctrlKey) {
+      // Cmd/Ctrl+Enter inserts a newline (browsers don't by default)
+      e.preventDefault();
+      const ta = e.target;
+      ta.setRangeText("\n", ta.selectionStart, ta.selectionEnd, "end");
+    } else if (!e.shiftKey) {
+      e.preventDefault();
+      submit();
+    }
+  };
+}
+
 function wire() {
   $("#workspace-select").addEventListener("change", (e) => selectWorkspace(e.target.value));
 
   $("#new-ticket-form").addEventListener("submit", (e) => { e.preventDefault(); submitTicket(); });
-  $("#new-ticket-body").addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); submitTicket(); }
-  });
+  $("#new-ticket-body").addEventListener("keydown", ticketKeydown(submitTicket));
 
   $("#append-form").addEventListener("submit", (e) => { e.preventDefault(); appendEntry(); });
-  $("#append-body").addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); appendEntry(); }
-  });
+  $("#append-body").addEventListener("keydown", ticketKeydown(appendEntry));
 
   $("#drawer-close").addEventListener("click", closeDrawer);
   $("#drawer-backdrop").addEventListener("click", closeDrawer);
