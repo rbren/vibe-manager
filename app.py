@@ -339,6 +339,10 @@ class StartConversation(BaseModel):
     max_iterations: int = 500
     role: str = "worker"  # worker | manager — recorded in conversation tags
     tags: dict[str, str] | None = None
+    # Agent-server LLM profile name (GET /api/manager/llm-profiles). On create
+    # the conversation starts on that model; on follow-up the conversation is
+    # switched to it first. None = the server's active default profile.
+    llm_profile: str | None = None
 
 
 # ---------------------------------------------------------------- attachments
@@ -741,21 +745,57 @@ def manager_agent_credentials():
     }
 
 
-def _agent_settings_payload() -> dict:
+def _llm_profiles() -> dict:
+    """Available LLM profiles on the agent server (no secrets).
+
+    Shape: {"profiles": [{"name", "model", ...}], "active_profile": <name>}.
+    """
+    r = httpx.get(
+        f"{AGENT_SERVER}/api/profiles",
+        headers={"X-Session-API-Key": SESSION_KEY},
+        timeout=15,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+@app.get("/api/manager/llm-profiles")
+def manager_llm_profiles():
+    """Model choices for the Manager: the agent server's configured profiles."""
+    return _llm_profiles()
+
+
+def _agent_settings_payload(llm_profile: str | None = None) -> dict:
     """Active agent settings with encrypted secrets, tools resolved to defaults.
 
     The canvas UI stores tools=[] and injects the exec set client-side; for
     server-side conversations we need tools=None so the SDK resolves the
     standard exec set (terminal, file_editor, task_tracker).
+
+    When `llm_profile` is given, the profile's LLM config (fetched with
+    encrypted secrets, same round-trip scheme as the settings) replaces
+    `agent_settings.llm`, so the worker runs on that model instead of the
+    active default.
     """
-    r = httpx.get(
-        f"{AGENT_SERVER}/api/settings",
-        headers={"X-Session-API-Key": SESSION_KEY, "X-Expose-Secrets": "encrypted"},
-        timeout=15,
-    )
+    headers = {"X-Session-API-Key": SESSION_KEY, "X-Expose-Secrets": "encrypted"}
+    r = httpx.get(f"{AGENT_SERVER}/api/settings", headers=headers, timeout=15)
     r.raise_for_status()
     settings = r.json()["agent_settings"]
     settings["tools"] = None
+    if llm_profile:
+        pr = httpx.get(
+            f"{AGENT_SERVER}/api/profiles/{llm_profile}", headers=headers, timeout=15
+        )
+        if pr.status_code == 404:
+            names = [p["name"] for p in _llm_profiles().get("profiles", [])]
+            raise HTTPException(
+                400, f"unknown llm_profile {llm_profile!r}; available: {names}"
+            )
+        pr.raise_for_status()
+        config = pr.json()["config"]
+        # Keep the usage_id the settings LLM carries — profile dumps default it.
+        config["usage_id"] = (settings.get("llm") or {}).get("usage_id") or "default"
+        settings["llm"] = config
     return settings
 
 
@@ -843,6 +883,19 @@ def manager_start_conversation(req: StartConversation):
     prompt = req.prompt
     with httpx.Client(timeout=120) as client:
         if req.conversation_id:
+            if req.llm_profile:
+                r = client.post(
+                    f"{AGENT_SERVER}/api/conversations/{req.conversation_id}/switch_profile",
+                    headers=headers, json={"profile_name": req.llm_profile},
+                )
+                if r.status_code in (400, 404):
+                    names = [p["name"] for p in _llm_profiles().get("profiles", [])]
+                    raise HTTPException(
+                        400,
+                        f"switch to llm_profile {req.llm_profile!r} failed: "
+                        f"{r.json().get('detail')}; available: {names}",
+                    )
+                r.raise_for_status()
             message = {"role": "user", "content": [{"text": prompt}], "run": True}
             r = client.post(
                 f"{AGENT_SERVER}/api/conversations/{req.conversation_id}/events",
@@ -858,6 +911,9 @@ def manager_start_conversation(req: StartConversation):
         # worktrees are provisioned here (see _provision_worker_worktree)
         # instead of via `worktree: true`, which would rewrite working_dir.
         conv_id = str(uuid.uuid4())
+        # Resolve settings (and validate llm_profile — 400s on an unknown
+        # name) BEFORE provisioning the worktree so we never leak one.
+        agent_settings = _agent_settings_payload(req.llm_profile)
         if req.worktree:
             wt = _provision_worker_worktree(req.working_dir, conv_id)
             prompt += _worktree_guidance(req.working_dir, wt)
@@ -870,7 +926,7 @@ def manager_start_conversation(req: StartConversation):
             "workspace": {"kind": "LocalWorkspace", "working_dir": req.working_dir},
             "worktree": False,
             "conversation_id": conv_id,
-            "agent_settings": _agent_settings_payload(),
+            "agent_settings": agent_settings,
             "secrets_encrypted": True,
             "initial_message": {"role": "user", "content": [{"text": prompt}], "run": True},
             "max_iterations": req.max_iterations,

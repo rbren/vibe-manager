@@ -349,6 +349,37 @@ def conv_statuses(tickets: list[dict]) -> dict[str, str]:
 
 # ------------------------------------------------------------- manager kickoff
 
+def model_selection_instructions() -> str:
+    """Manager-prompt section listing the agent server's LLM profiles.
+
+    Degrades to a self-serve instruction if the vibe API is unreachable at
+    prompt-build time so the manager can still pick a model.
+    """
+    try:
+        data = vibe("/api/manager/llm-profiles")
+        active = data.get("active_profile")
+        lines = "\n".join(
+            f"- `{p['name']}` → {p['model']}"
+            + (" **(active default)**" if p["name"] == active else "")
+            for p in data["profiles"]
+        )
+        if not lines:
+            raise ValueError("no profiles")
+    except Exception:
+        lines = (
+            f"- query `GET {VIBE_API}/api/manager/llm-profiles` for the "
+            "current list (name → model, plus the active default)"
+        )
+    return f"""## Model selection for workers
+Available LLM profiles on the agent server:
+{lines}
+Choose a model PER TASK and pass it as `"llm_profile": "<name>"` in the worker-dispatch POST (omit the field to use the active default). Judge by the ticket's difficulty:
+- strongest/most expensive model → gnarly work: architecture, tricky debugging, large refactors, vague requirements
+- default → routine feature work and bug fixes
+- cheapest/fastest → trivial chores: copy tweaks, docs, config, one-liners
+Including `llm_profile` in a follow-up POST switches that EXISTING conversation's model first — escalate a stuck worker to a stronger model this way."""
+
+
 def build_manager_prompt(ws: dict, tickets: list[dict]) -> str:
     board_json = json.dumps(
         [
@@ -412,10 +443,12 @@ Vibe ticket API (no auth needed from this machine): base `{VIBE_API}`
 - `PATCH {VIBE_API}/api/manager/tickets/<ticket_id>` with JSON body; fields (all optional): `status` (pending|in_progress|needs_input|finished), `title` (see the title rule below), `conversation_id`, `pr_url`, `manager_note` (short one-liner shown on the card; ALSO the contract for deferrals — see below), `dispatched_entry_count` (int — set to the number of entries you have relayed to the worker so far), `append_entry` (string — appends a visible manager comment to the ticket thread).
 - `GET {VIBE_API}/api/manager/workspaces/{WORKSPACE_ID}/snapshot` to re-read the board.
 
+{model_selection_instructions()}
+
 Worker dispatch (via the vibe API — it handles agent config; workers ALWAYS work in git worktrees, never in the main checkout. The vibe API provisions the worktree, appends its path to your prompt, and sets the conversation's workspace working_dir to the project so it files under the right workspace in the UI — always pass the PROJECT path as working_dir, never a worktree path):
 - **Start a worker conversation**:
   `POST {VIBE_API}/api/manager/conversations` with JSON:
-  `{{"working_dir": "{WORKSPACE_PATH}", "prompt": "<self-contained task prompt>", "title": "🎫 <short task summary>"}}`
+  `{{"working_dir": "{WORKSPACE_PATH}", "prompt": "<self-contained task prompt>", "title": "🎫 <short task summary>", "llm_profile": "<model choice — see Model selection>"}}`
   Response: `{{"id": "<conversation_id>", "conversation_url": ...}}` — immediately PATCH the id onto the ticket along with status in_progress.
 - **Send a follow-up message to an existing conversation** (same endpoint):
   `{{"working_dir": "{WORKSPACE_PATH}", "prompt": "<message>", "conversation_id": "<conv_id>"}}`
