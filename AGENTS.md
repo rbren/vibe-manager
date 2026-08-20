@@ -56,6 +56,13 @@ via /etc/nginx/.htpasswd).
     uploads - re-copy `nginx/vibe.apps.canvas.rbren.io` to sites-available
     and reload nginx when deploying this feature.
 
+- **Reopen on new request**: `POST /api/tickets/<id>/entries` with
+  author=user on a finished/needs_input ticket immediately sets it back to
+  pending (bottom of the pending column) so the manager picks it up —
+  in_progress and verified tickets are untouched, as are manager/agent
+  entries. The automation's mechanical "PR open → needs_input" transition
+  skips tickets with undispatched entries so it can't undo a reopen. Tests:
+  `tests/test_reopen_on_entry.py`.
 - `static/` â€” vanilla JS SPA (no build step). Kanban columns: pending,
   in_progress, needs_input, finished. Drag vertically to reprioritize; click
   a card for the append-only drawer; each card links to its conversation.

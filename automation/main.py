@@ -253,8 +253,13 @@ def apply_mechanical_transitions(tickets: list[dict]) -> None:
         if prs == "merged" and t["status"] != "finished":
             new_status, note = "finished", "PR merged — ticket finished."
         elif prs == "open" and t["status"] not in ("needs_input", "finished"):
-            # Only park the card once the worker is done pushing commits.
-            if (t.get("conv_status") or "") in TERMINAL_CONV_STATUSES or not t.get("conversation_id"):
+            # Only park the card once the worker is done pushing commits, and
+            # not while a new user entry awaits dispatch (the app reopens such
+            # tickets to pending; don't fight it before the manager relays it).
+            undispatched = len(t["entries"]) > t.get("dispatched_entry_count", 0)
+            if not undispatched and (
+                (t.get("conv_status") or "") in TERMINAL_CONV_STATUSES or not t.get("conversation_id")
+            ):
                 new_status, note = "needs_input", "PR is open and awaiting review."
         if new_status:
             print(f"mechanical: ticket {t['id']} {t['status']} -> {new_status} (pr {prs})")
@@ -400,7 +405,7 @@ Agent server API (read-only inspection): base `{AGENT_SERVER}`, header `X-Sessio
 2. For every ticket whose worker conversation just ended (conversation_status finished/idle but ticket still in_progress): read its final response. If it opened a PR, PATCH pr_url + status needs_input. In push-to-main mode verify the push landed on main and mark finished. If the worker failed or stalled (error/stuck), decide: send a corrective follow-up message, or mark needs_input with an explanatory append_entry asking the user for guidance.
 3. For tickets with NEW user entries beyond dispatched_entry_count:
    - If the ticket already has a conversation, prefer **reusing it**: send the new request as a follow-up message to that conversation, bump dispatched_entry_count to the current entry count, and ensure status is in_progress.
-   - A finished/needs_input ticket that receives a new entry moves back to in_progress once you dispatch the follow-up.
+   - A finished/needs_input ticket that receives a new user entry is automatically moved back to pending by the app; it moves to in_progress once you dispatch the follow-up.
 4. For pending tickets with no conversation: dispatch workers, **highest priority first** (lower priority_rank = higher priority; the user orders cards within columns).
    - Respect the concurrency cap: count worker conversations currently in execution_status "running" on this board; never exceed **{ws['max_concurrent']}**.
    - **Avoid conflicts**: think about which tickets touch the same files/subsystems. Serialize tickets that would collide — run only independent tickets concurrently.

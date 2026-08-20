@@ -373,7 +373,21 @@ def append_entry(ticket_id: str, req: NewEntry):
             "INSERT INTO entries(id, ticket_id, author, body, created_at) VALUES(?,?,?,?,?)",
             (uuid.uuid4().hex[:12], ticket_id, req.author, body, now),
         )
-        conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (now, ticket_id))
+        if req.author == "user" and row["status"] in ("finished", "needs_input"):
+            # A new user request reopens the ticket immediately (bottom of the
+            # pending column) instead of waiting for the manager cycle.
+            # in_progress tickets are left alone (worker already running);
+            # verified is terminal and deliberately not reopened.
+            max_order = conn.execute(
+                "SELECT COALESCE(MAX(sort_order), 0) FROM tickets WHERE workspace_id=? AND status='pending'",
+                (row["workspace_id"],),
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE tickets SET status='pending', sort_order=?, updated_at=? WHERE id=?",
+                (max_order + 1, now, ticket_id),
+            )
+        else:
+            conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (now, ticket_id))
         conn.commit()
         return ticket_dict(conn, conn.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone())
 
