@@ -1,11 +1,11 @@
 # vibe-manager
 
-> **Workspace assignment correction (2026-05-21):** the tag/backfill approach
-> (ede340a, scripts/backfill_workspace_tags.py) was REJECTED by the user. The
-> agent-server conversation-create POST has a dedicated field that sets the
-> workspace directory (see how agent-canvas in openhands/openhands builds its
-> POST /api/conversations body). app.py `POST /api/manager/conversations` and
-> automation/main.py must pass that field on every conversation they create.
+> **Workspace assignment correction (2026-05-21, RESOLVED):** the tag/backfill
+> approach (ede340a) was rejected by the user; conversations must instead be
+> created with the dedicated `workspace` field (`{"kind": "LocalWorkspace",
+> "working_dir": <project path>}`) kept pointing at the PROJECT directory —
+> see "Conversation ↔ workspace association" under Key facts for how app.py
+> now does this for every conversation (workers included) on all workspaces.
 
 Vibecoding work manager: kanban SPA + per-workspace "Manager" automation that
 dispatches OpenHands worker agent conversations.
@@ -15,7 +15,7 @@ via /etc/nginx/.htpasswd).
 
 ## Architecture
 
-- `app.py` â€” FastAPI backend on 127.0.0.1:18300 (systemd: `vibe-manager.service`).
+- `app.py` ├óŌé¼ŌĆØ FastAPI backend on 127.0.0.1:18300 (systemd: `vibe-manager.service`).
   SQLite at `./vibe.db`. Serves the SPA from `static/` under `/assets`.
   - Public API (`/api/...`): workspace picker, settings (max_concurrent,
     push_mode pr|main), ticket CRUD (append-only entries), priority reorder.
@@ -23,7 +23,7 @@ via /etc/nginx/.htpasswd).
     agent-server workspace parents (e.g. /root/git/*) + agent-server-
     registered workspaces; `selected` = already-onboarded ones from vibe.db.
     The SPA picker deliberately shows ONLY the workspace name (no directory
-    path like /root/git/foo — user request 2026-05); option values are still
+    path like /root/git/foo ŌĆö user request 2026-05); option values are still
     full paths.
   - Manager API (`/api/manager/...`): board snapshot, ticket PATCH
     (status/conversation_id/pr_url/manager_note/dispatched_entry_count/
@@ -32,14 +32,14 @@ via /etc/nginx/.htpasswd).
   - Selecting a workspace bootstraps (or refreshes, incl. tarball) a per-
     workspace cron automation named `vibe-manager:<id>:<name>` in the
     automation backend (every minute).
-- `automation/main.py` â€” deterministic poller, packaged into the automation
+- `automation/main.py` ├óŌé¼ŌĆØ deterministic poller, packaged into the automation
   tarball with a per-workspace `config.json`. Each run: gathers board +
-  conversation statuses, applies mechanical transitions (PR merged â†’ finished,
-  push-to-main verified â†’ finished), computes a fingerprint + actionable
+  conversation statuses, applies mechanical transitions (PR merged ├óŌĆĀŌĆÖ finished,
+  push-to-main verified ├óŌĆĀŌĆÖ finished), computes a fingerprint + actionable
   signals, and only kicks off a Manager agent conversation when the
   fingerprint changed (or a retry-safe signal persists >10 min). State lives
   in the automation KV store, including a `conv_statuses` map (conversation_id
-  → execution_status) for every tracked ticket conversation; a conversation
+  ŌåÆ execution_status) for every tracked ticket conversation; a conversation
   running while its ticket is NOT in_progress (e.g. the user manually messaged
   a needs_input worker) raises an `agent-resumed` signal so the manager moves
   the card back to in_progress. Tests:
@@ -80,20 +80,20 @@ via /etc/nginx/.htpasswd).
   renders it as a bold heading on kanban cards and in the drawer. Convention
   (enforced via the Manager prompt in automation/main.py, "Title rule"): one
   emoji prefix + ONE or TWO words, NEVER more than two words (e.g.
-  "🐛 Login fix"); the manager titles every untitled ticket it touches.
+  "­¤Éø Login fix"); the manager titles every untitled ticket it touches.
   Tests: `tests/test_ticket_title.py`.
 - **Reopen on new request**: `POST /api/tickets/<id>/entries` with
   author=user on a finished/needs_input ticket immediately sets it back to
-  pending (bottom of the pending column) so the manager picks it up —
+  pending (bottom of the pending column) so the manager picks it up ŌĆö
   in_progress and verified tickets are untouched, as are manager/agent
-  entries. The automation's mechanical "PR open → needs_input" transition
+  entries. The automation's mechanical "PR open ŌåÆ needs_input" transition
   skips tickets with undispatched entries so it can't undo a reopen. Tests:
   `tests/test_reopen_on_entry.py`.
 - **Live action summaries**: in_progress tickets show the worker agent's most
   recent action summary (kanban card + drawer, pulsing dot). `app.py` watches
   each in_progress conversation server-side: seeds via the agent server's
   `GET /api/conversations/<id>/events/search` (TIMESTAMP_DESC), then holds a
-  websocket to `ws://…:18000/sockets/events/<id>`; the LLM-predicted `summary`
+  websocket to `ws://ŌĆ”:18000/sockets/events/<id>`; the LLM-predicted `summary`
   lives inside each ActionEvent's `tool_call.arguments` JSON (see
   `extract_action_summary`). The cached value rides on the board payload as
   `latest_action` ({summary, tool, timestamp}) only for in_progress tickets,
@@ -111,17 +111,17 @@ via /etc/nginx/.htpasswd).
   backend failures degrade to `error` (still 200) so the UI can show
   "unknown" instead of breaking. The SPA polls it every 15s and renders the
   topbar `#mgr-badge` as: working (manager conversation running, pulsing) /
-  polling (automation run active) / ✓|✗ + relative last-run time / paused
+  polling (automation run active) / Ō£ō|Ō£Ś + relative last-run time / paused
   (disabled) / unknown (backend error); details in the badge tooltip. CSS
   variants `.mgr-badge.ok|.err|.paused`. Tests:
   `tests/test_automation_status.py` (stub automation backend on a local
-  port via VIBE_AUTOMATION_API; run with the service venv — note tests
+  port via VIBE_AUTOMATION_API; run with the service venv ŌĆö note tests
   import app.py, which needs `.session-key`/`.automation-key` in the repo
   root, so run them from the main checkout).
 - **URL routing**: selecting a workspace pushes `/workspace/<name>` (name =
   directory basename, encodeURIComponent'd) via history.pushState; popstate
   re-selects. On load the SPA prefers the URL's workspace over
-  localStorage (`vibe.workspace`), resolving name → path from the
+  localStorage (`vibe.workspace`), resolving name ŌåÆ path from the
   /api/workspaces lists. `app.py` serves the SPA index for `GET
   /workspace/{path:path}` so deep links work (nginx proxies everything, no
   nginx change needed). Asset URLs are absolute (`/assets/...`) so nested
@@ -130,13 +130,13 @@ via /etc/nginx/.htpasswd).
   variable override under `html[data-theme="light"]` in static/style.css. ALL
   colors in the stylesheet must be var() tokens defined in `:root` (incl.
   border/glow/backdrop tokens like `--amber-line`, `--accent-glow`,
-  `--topbar-bg`, `--accent-contrast` for text on solid accent buttons) —
+  `--topbar-bg`, `--accent-contrast` for text on solid accent buttons) ŌĆö
   never hardcode a hex/rgba outside the two token blocks, or light mode
   breaks. The topbar `#theme-toggle` button flips the theme
   (`applyTheme`/`toggleTheme` in app.js), persisted in localStorage
   `vibe.theme`; an inline `<script>` in index.html's head applies the saved
   theme before first paint to avoid a flash.
-- `static/` â€” vanilla JS SPA (no build step). Kanban columns: pending,
+- `static/` ├óŌé¼ŌĆØ vanilla JS SPA (no build step). Kanban columns: pending,
   in_progress, needs_input, finished. Drag vertically to reprioritize; click
   a card for the append-only drawer; each card links to its conversation.
   Finished cards have a "mark verified" button (`POST
@@ -147,13 +147,22 @@ via /etc/nginx/.htpasswd).
 
 ## Key facts / gotchas
 
-- Worker conversations are ALWAYS started with `worktree: true` (git worktree
-  under /tmp/conversation-worktrees/<conv_id>/<project>). Manager
-  conversations run directly in the workspace (worktree: false) to maintain
-  AGENTS.md.
+- **Conversation Ōåö workspace association**: every conversation the manager
+  creates is POSTed with the dedicated `workspace` option ŌĆö
+  `{"kind": "LocalWorkspace", "working_dir": "<project path>"}` ŌĆö exactly how
+  the canvas UI attaches a conversation to a picked workspace. Workers still
+  get an isolation git worktree under
+  /tmp/conversation-worktrees/<conv_id>/<project>, but app.py provisions it
+  itself (`_provision_worker_worktree`, branch `openhands/<conv_id>` based on
+  origin default branch, guidance appended to the prompt) and passes
+  `worktree: false` ŌĆö the agent server's `worktree: true` would REWRITE
+  `workspace.working_dir` to the worktree path, dissociating the conversation
+  from the workspace (that's what put everything under "no workspace").
+  Manager conversations run directly in the workspace to maintain AGENTS.md.
+  Tests: `tests/test_worker_worktree.py`.
 - Every conversation started via `/api/manager/conversations` gets tags:
   `workspace=<project path>` (so the canvas UI groups it under the right
-  workspace — the worktree working_dir alone is NOT enough) and
+  workspace ŌĆö the worktree working_dir alone is NOT enough) and
   `viberole=worker|manager`. Follow-ups to an existing conversation retro-tag
   it if the `workspace` tag is missing (self-heals pre-tagging conversations).
   Manager conversation ids are also recorded on
@@ -162,17 +171,17 @@ via /etc/nginx/.htpasswd).
   happen even if the automation KV state is lost.
 - **How canvas workspace grouping actually works** (investigated 2026-05):
   the sidebar groups by each conversation's `selected_workspace`, resolved as
-  `localStorage metadata ?? conversation.tags.workspace ?? null` → "No
+  `localStorage metadata ?? conversation.tags.workspace ?? null` ŌåÆ "No
   workspace". localStorage is only written when a human launches from the UI,
   so server-created conversations rely ENTIRELY on the `tags.workspace`
-  fallback — and that fallback is a LOCAL PATCH to the minified bundle
+  fallback ŌĆö and that fallback is a LOCAL PATCH to the minified bundle
   `/root/.npm-global/lib/node_modules/@openhands/agent-canvas/build/assets/`
   `agent-server-conversation-service.api-DK56YPTs.js` (inserted
   `e.tags?.workspace??` into `Be()`; pristine @openhands/agent-canvas 1.14.0
   has no such fallback). Upgrading/reinstalling agent-canvas REVERTS the
-  patch — re-apply it. The asset filename hash didn't change, so browsers may
+  patch ŌĆö re-apply it. The asset filename hash didn't change, so browsers may
   cache the pre-patch file: hard-refresh if grouping looks broken.
-  `PATCH /api/conversations/<id> {"tags": {...}}` REPLACES all tags — always
+  `PATCH /api/conversations/<id> {"tags": {...}}` REPLACES all tags ŌĆö always
   merge with the existing ones. `scripts/backfill_workspace_tags.py`
   (stdlib-only, idempotent, run from the repo root) retro-tags every
   conversation referenced by vibe.db across ALL workspaces. Tagging happens
@@ -182,12 +191,12 @@ via /etc/nginx/.htpasswd).
   `GET /api/settings` with header `X-Expose-Secrets: encrypted` +
   `secrets_encrypted: true`, and `tools` forced to `null` (the stored value
   `[]` means bare agent; `null` resolves the default exec toolset). Using
-  `agent_profile_id` yields an agent with NO tools â€” don't.
+  `agent_profile_id` yields an agent with NO tools ├óŌé¼ŌĆØ don't.
 - Auth keys are read at service start from `.session-key` / `.automation-key`
   in the repo root (falling back to env). These are extracted from the live
   agent-server process env; static copies go stale.
 - Automation backend: 127.0.0.1:18001, header X-Session-API-Key. Agent
-  server: 127.0.0.1:18000. Conversation search endpoint is unusably slow â€”
+  server: 127.0.0.1:18000. Conversation search endpoint is unusably slow ├óŌé¼ŌĆØ
   always GET conversations by ID.
 - systemd unit: `systemd/vibe-manager.service` (copy to /etc/systemd/system
   and `systemctl daemon-reload` after edits). nginx site:
@@ -198,34 +207,34 @@ via /etc/nginx/.htpasswd).
 - Git remote: `origin` is https://github.com/rbren/vibe-manager (PRIVATE
   repo; push-to-master allowed). The remote URL embeds a GitHub token pulled
   from the agent-server secrets store (`GET
-  /api/settings/secrets/GITHUB_PERSONAL_ACCESS_TOKEN` with the session key) —
+  /api/settings/secrets/GITHUB_PERSONAL_ACCESS_TOKEN` with the session key) ŌĆö
   never commit the token; refresh the URL from the secrets store if it stops
   authenticating.
 - The default branch is `master`, not `main`.
 - History was rewritten (git filter-repo, 2026-05-21) to purge
   `.session-key` / `.automation-key`, which are now gitignored and exist only
-  on disk (the service reads them from the repo root at startup — do not
+  on disk (the service reads them from the repo root at startup ŌĆö do not
   delete them). Never commit these files again.
 - Push-to-main mode (current): workers commit on their worktree branch and
   push directly to the default branch with `git push origin HEAD:master`
   (this works from a worktree even though `master` is checked out in the main
-  clone — only a local checkout of `master` is blocked). Deploy = in the main
+  clone ŌĆö only a local checkout of `master` is blocked). Deploy = in the main
   checkout `git pull --ff-only && systemctl restart vibe-manager.service`,
   then verify `/api/health`. Workers should fetch+rebase onto latest
   origin/master right before pushing.
 - Agent-server restarts kill in-flight worker tool calls and leave those
   conversations in `error` state ("A restart occurred while this tool was in
   progress"). The worktree survives with uncommitted changes; the Manager
-  should check `git log origin/master` / the worktree before deciding — the
+  should check `git log origin/master` / the worktree before deciding ŌĆö the
   work may already be landed+deployed (only the final report was lost), or a
   resume follow-up message restarts the worker where it left off.
 
 - History-rewrite serialization: while a git history rewrite (filter-repo) is
-  in flight (ticket 93b58130), do NOT dispatch any other workers — worktree
+  in flight (ticket 93b58130), do NOT dispatch any other workers ŌĆö worktree
   branches based on pre-rewrite hashes get orphaned and merging them would
   reintroduce the purged secret blobs. Queue everything behind the rewrite.
 
 - Manager scheduling note: the SPA is a single static/app.js (no build step), so
-  frontend tickets almost always collide there — the Manager serializes app.js-
+  frontend tickets almost always collide there ŌĆö the Manager serializes app.js-
   heavy tickets and tells concurrent workers to fetch+rebase onto latest master
   before landing.

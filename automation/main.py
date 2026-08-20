@@ -412,7 +412,7 @@ Vibe ticket API (no auth needed from this machine): base `{VIBE_API}`
 - `PATCH {VIBE_API}/api/manager/tickets/<ticket_id>` with JSON body; fields (all optional): `status` (pending|in_progress|needs_input|finished), `title` (see the title rule below), `conversation_id`, `pr_url`, `manager_note` (short one-liner shown on the card; ALSO the contract for deferrals — see below), `dispatched_entry_count` (int — set to the number of entries you have relayed to the worker so far), `append_entry` (string — appends a visible manager comment to the ticket thread).
 - `GET {VIBE_API}/api/manager/workspaces/{WORKSPACE_ID}/snapshot` to re-read the board.
 
-Worker dispatch (via the vibe API — it handles agent config; workers ALWAYS run in git worktrees, never in the main checkout):
+Worker dispatch (via the vibe API — it handles agent config; workers ALWAYS work in git worktrees, never in the main checkout. The vibe API provisions the worktree, appends its path to your prompt, and sets the conversation's workspace working_dir to the project so it files under the right workspace in the UI — always pass the PROJECT path as working_dir, never a worktree path):
 - **Start a worker conversation**:
   `POST {VIBE_API}/api/manager/conversations` with JSON:
   `{{"working_dir": "{WORKSPACE_PATH}", "prompt": "<self-contained task prompt>", "title": "🎫 <short task summary>"}}`

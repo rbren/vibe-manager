@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import sqlite3
+import subprocess
 import tarfile
 import threading
 import time
@@ -758,6 +759,54 @@ def _ensure_workspace_tags(client: httpx.Client, headers: dict, req: StartConver
         pass  # tagging is cosmetic; never fail the follow-up over it
 
 
+WORKTREE_ROOT = Path("/tmp/conversation-worktrees")
+
+
+def _git(project: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(project), *args],
+        capture_output=True, text=True, timeout=120,
+    )
+
+
+def _provision_worker_worktree(working_dir: str, conv_id: str) -> dict:
+    """Create an isolation git worktree for a worker conversation.
+
+    We create the worktree ourselves (instead of passing `worktree: true` to
+    the agent server) so the conversation's `workspace.working_dir` — the
+    dedicated workspace option in POST /api/conversations, and what the canvas
+    UI sets to the selected workspace directory — stays the PROJECT path
+    instead of being rewritten to the per-conversation worktree path.
+    Layout and branch naming mirror the agent server's convention.
+    """
+    project = Path(working_dir).resolve()
+    wt_path = WORKTREE_ROOT / conv_id / project.name
+    wt_path.parent.mkdir(parents=True, exist_ok=True)
+    # Base the worktree on the freshest origin default branch when there is
+    # one, falling back to local HEAD (mirrors agent-server behavior).
+    start = "HEAD"
+    head_ref = _git(project, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    if head_ref.returncode == 0:
+        _git(project, "fetch", "origin")  # best-effort freshness
+        start = head_ref.stdout.strip().removeprefix("refs/remotes/")
+    branch = f"openhands/{conv_id}"
+    r = _git(project, "worktree", "add", "-b", branch, str(wt_path), start)
+    if r.returncode != 0:
+        raise HTTPException(502, f"git worktree add failed: {r.stderr.strip()[:300]}")
+    return {"path": str(wt_path), "branch": branch, "start": start}
+
+
+def _worktree_guidance(working_dir: str, wt: dict) -> str:
+    return (
+        "\n\nThis conversation uses a dedicated git worktree.\n"
+        f"- Original workspace: {working_dir}\n"
+        f"- Worktree (do ALL file and git work here): {wt['path']}\n"
+        f"- You are on branch `{wt['branch']}` (based on {wt['start']}).\n"
+        "cd into the worktree before doing anything else; never modify the "
+        "original checkout directly."
+    )
+
+
 @app.post("/api/manager/conversations")
 def manager_start_conversation(req: StartConversation):
     """Start a worker/manager conversation (or send a follow-up to an existing one).
@@ -766,9 +815,10 @@ def manager_start_conversation(req: StartConversation):
     get the active LLM profile + default exec tools without handling secrets.
     """
     headers = {"X-Session-API-Key": SESSION_KEY, "Content-Type": "application/json"}
-    message = {"role": "user", "content": [{"text": req.prompt}], "run": True}
+    prompt = req.prompt
     with httpx.Client(timeout=120) as client:
         if req.conversation_id:
+            message = {"role": "user", "content": [{"text": prompt}], "run": True}
             r = client.post(
                 f"{AGENT_SERVER}/api/conversations/{req.conversation_id}/events",
                 headers=headers, json=message,
@@ -777,8 +827,15 @@ def manager_start_conversation(req: StartConversation):
             _ensure_workspace_tags(client, headers, req)
             return {"id": req.conversation_id, "followup": True,
                     "conversation_url": f"{CANVAS_BASE}/conversations/{req.conversation_id}"}
-        # `workspace` tag = the project path (not the worktree path) so the
-        # canvas UI groups the conversation under the right workspace.
+        # The conversation's `workspace.working_dir` is the dedicated option
+        # the agent server / canvas UI use to associate a conversation with a
+        # workspace directory — it must be the PROJECT path. Worker isolation
+        # worktrees are provisioned here (see _provision_worker_worktree)
+        # instead of via `worktree: true`, which would rewrite working_dir.
+        conv_id = str(uuid.uuid4())
+        if req.worktree:
+            wt = _provision_worker_worktree(req.working_dir, conv_id)
+            prompt += _worktree_guidance(req.working_dir, wt)
         tags = {
             "workspace": req.working_dir,
             "viberole": req.role,
@@ -786,16 +843,23 @@ def manager_start_conversation(req: StartConversation):
         }
         body = {
             "workspace": {"kind": "LocalWorkspace", "working_dir": req.working_dir},
-            "worktree": req.worktree,
+            "worktree": False,
+            "conversation_id": conv_id,
             "agent_settings": _agent_settings_payload(),
             "secrets_encrypted": True,
-            "initial_message": message,
+            "initial_message": {"role": "user", "content": [{"text": prompt}], "run": True},
             "max_iterations": req.max_iterations,
             "autotitle": not req.title,
             "tags": tags,
         }
-        r = client.post(f"{AGENT_SERVER}/api/conversations", headers=headers, json=body)
-        r.raise_for_status()
+        try:
+            r = client.post(f"{AGENT_SERVER}/api/conversations", headers=headers, json=body)
+            r.raise_for_status()
+        except httpx.HTTPError:
+            if req.worktree:  # don't leak the orphaned isolation worktree
+                _git(Path(req.working_dir), "worktree", "remove", "--force", wt["path"])
+                _git(Path(req.working_dir), "branch", "-D", wt["branch"])
+            raise
         conv_id = r.json()["id"]
         if req.role == "manager":
             with db() as conn:
