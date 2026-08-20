@@ -186,6 +186,18 @@ def test_manager_prompt_degrades_without_vibe_api():
     print("ok: manager prompt degrades to self-serve instruction on fetch failure")
 
 
+def test_manager_prompt_note_style_rule():
+    """Ticket c40ab0776313: card notes must be terse status-only text."""
+    mod = _load_automation("http://127.0.0.1:1")
+    ws = {"max_concurrent": 2, "push_mode": "main"}
+    prompt = mod.build_manager_prompt(ws, [])
+    assert "Note style rule" in prompt
+    assert "STATUS ONLY" in prompt
+    assert "Worker dispatched" in prompt  # canonical example survives edits
+    assert "deferral" in prompt.lower()  # deferral-reason exception intact
+    print("ok: manager prompt enforces status-only note style with deferral exception")
+
+
 if __name__ == "__main__":
     test_llm_profiles_endpoint_proxies_agent_server()
     test_agent_settings_default_untouched()
@@ -193,4 +205,5 @@ if __name__ == "__main__":
     test_agent_settings_unknown_profile_400()
     test_manager_prompt_lists_models()
     test_manager_prompt_degrades_without_vibe_api()
+    test_manager_prompt_note_style_rule()
     print("all llm profile tests passed")

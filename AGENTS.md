@@ -74,6 +74,14 @@ via /etc/nginx/.htpasswd).
     uploads - re-copy `nginx/vibe.apps.canvas.rbren.io` to sites-available
     and reload nginx when deploying this feature.
 
+- **Manager note style** (user request, ticket c40ab0776313): manager_note
+  and append_entry are STATUS-ONLY one-liners — e.g. "Worker dispatched",
+  "Landed 37d9ab on origin/master", "Worker restarted for fix" — never a
+  description of the task itself (the card already shows it). Exceptions:
+  deferral notes keep their short reason (deferral contract), and a
+  needs_input append_entry may carry the specific question for the user.
+  Enforced via the "Note style rule" in the manager prompt
+  (automation/main.py item 6).
 - **Ticket titles**: tickets have a nullable `title` column, included in every
   ticket dict (board AND manager snapshot) and settable via the manager PATCH
   endpoint (`/api/manager/tickets/<id>`, trimmed; blank clears it). The SPA
