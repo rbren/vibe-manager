@@ -136,6 +136,10 @@ via /etc/nginx/.htpasswd).
   (`applyTheme`/`toggleTheme` in app.js), persisted in localStorage
   `vibe.theme`; an inline `<script>` in index.html's head applies the saved
   theme before first paint to avoid a flash.
+  - Light palette was deliberately softened (d7a46d5): warm off-white
+    surfaces (no pure #fff cards), low-opacity shadows/glows, eased
+    near-black text, desaturated accents. Keep new light-mode tokens muted
+    to match — "less jarring" is a user requirement.
 - `static/` ├óŌé¼ŌĆØ vanilla JS SPA (no build step). Kanban columns: pending,
   in_progress, needs_input, finished. Drag vertically to reprioritize; click
   a card for the append-only drawer; each card links to its conversation.
