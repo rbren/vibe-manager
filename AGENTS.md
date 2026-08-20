@@ -119,6 +119,16 @@ via /etc/nginx/.htpasswd).
   /workspace/{path:path}` so deep links work (nginx proxies everything, no
   nginx change needed). Asset URLs are absolute (`/assets/...`) so nested
   paths render fine.
+- **Theming (light/dark)**: dark is the default; light mode is a full CSS-
+  variable override under `html[data-theme="light"]` in static/style.css. ALL
+  colors in the stylesheet must be var() tokens defined in `:root` (incl.
+  border/glow/backdrop tokens like `--amber-line`, `--accent-glow`,
+  `--topbar-bg`, `--accent-contrast` for text on solid accent buttons) —
+  never hardcode a hex/rgba outside the two token blocks, or light mode
+  breaks. The topbar `#theme-toggle` button flips the theme
+  (`applyTheme`/`toggleTheme` in app.js), persisted in localStorage
+  `vibe.theme`; an inline `<script>` in index.html's head applies the saved
+  theme before first paint to avoid a flash.
 - `static/` â€” vanilla JS SPA (no build step). Kanban columns: pending,
   in_progress, needs_input, finished. Drag vertically to reprioritize; click
   a card for the append-only drawer; each card links to its conversation.

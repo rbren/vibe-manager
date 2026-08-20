@@ -15,6 +15,7 @@ const state = {
   dragging: null,        // { id, status }
   showVerified: localStorage.getItem("vibe.showVerified") === "1",
   newTicketFiles: [],    // File objects staged for the next ticket
+  theme: localStorage.getItem("vibe.theme") === "light" ? "light" : "dark",
 };
 
 const STATUS_LABEL = {
@@ -730,6 +731,26 @@ function wire() {
 
   $("#show-verified").addEventListener("click", toggleVerified);
   renderVerifiedToggle();
+
+  $("#theme-toggle").addEventListener("click", toggleTheme);
+  applyTheme();
+}
+
+/* ------------------------------------------------------------------ theme */
+
+function applyTheme() {
+  const light = state.theme === "light";
+  if (light) document.documentElement.dataset.theme = "light";
+  else delete document.documentElement.dataset.theme;
+  const btn = $("#theme-toggle");
+  btn.textContent = light ? "☾ dark" : "☀ light";
+  btn.title = light ? "switch to dark mode" : "switch to light mode";
+}
+
+function toggleTheme() {
+  state.theme = state.theme === "light" ? "dark" : "light";
+  localStorage.setItem("vibe.theme", state.theme);
+  applyTheme();
 }
 
 async function init() {

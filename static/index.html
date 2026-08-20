@@ -8,6 +8,11 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/assets/style.css">
+<script>
+  // Apply the saved theme before first paint to avoid a dark→light flash.
+  if (localStorage.getItem("vibe.theme") === "light")
+    document.documentElement.dataset.theme = "light";
+</script>
 </head>
 <body>
 <header class="topbar">
@@ -31,6 +36,7 @@
       </div>
     </div>
     <button id="show-verified" class="toggle-verified" hidden>✓ show verified</button>
+    <button id="theme-toggle" class="theme-toggle" title="switch to light mode" aria-label="toggle light/dark mode">☀ light</button>
     <div class="mgr-badge" id="mgr-badge" hidden title="Manager automation active for this workspace">
       <span class="pulse" id="mgr-dot"></span> <span id="mgr-text">manager</span>
     </div>
