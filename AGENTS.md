@@ -115,10 +115,30 @@ via /etc/nginx/.htpasswd).
 - Every conversation started via `/api/manager/conversations` gets tags:
   `workspace=<project path>` (so the canvas UI groups it under the right
   workspace — the worktree working_dir alone is NOT enough) and
-  `viberole=worker|manager`. Manager conversation ids are also recorded on
+  `viberole=worker|manager`. Follow-ups to an existing conversation retro-tag
+  it if the `workspace` tag is missing (self-heals pre-tagging conversations).
+  Manager conversation ids are also recorded on
   `workspaces.manager_conversation_id`; the cron bails out if that
   conversation is still running (tag-verified), so overlapping managers can't
   happen even if the automation KV state is lost.
+- **How canvas workspace grouping actually works** (investigated 2026-05):
+  the sidebar groups by each conversation's `selected_workspace`, resolved as
+  `localStorage metadata ?? conversation.tags.workspace ?? null` → "No
+  workspace". localStorage is only written when a human launches from the UI,
+  so server-created conversations rely ENTIRELY on the `tags.workspace`
+  fallback — and that fallback is a LOCAL PATCH to the minified bundle
+  `/root/.npm-global/lib/node_modules/@openhands/agent-canvas/build/assets/`
+  `agent-server-conversation-service.api-DK56YPTs.js` (inserted
+  `e.tags?.workspace??` into `Be()`; pristine @openhands/agent-canvas 1.14.0
+  has no such fallback). Upgrading/reinstalling agent-canvas REVERTS the
+  patch — re-apply it. The asset filename hash didn't change, so browsers may
+  cache the pre-patch file: hard-refresh if grouping looks broken.
+  `PATCH /api/conversations/<id> {"tags": {...}}` REPLACES all tags — always
+  merge with the existing ones. `scripts/backfill_workspace_tags.py`
+  (stdlib-only, idempotent, run from the repo root) retro-tags every
+  conversation referenced by vibe.db across ALL workspaces. Tagging happens
+  server-side in app.py, so it covers every workspace's manager (vibe-manager
+  AND dj-station) without touching their automation tarballs.
 - Conversation creation must use `agent_settings` from
   `GET /api/settings` with header `X-Expose-Secrets: encrypted` +
   `secrets_encrypted: true`, and `tools` forced to `null` (the stored value

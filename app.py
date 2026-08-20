@@ -684,6 +684,31 @@ def _agent_settings_payload() -> dict:
     return settings
 
 
+def _ensure_workspace_tags(client: httpx.Client, headers: dict, req: StartConversation) -> None:
+    """Self-heal `workspace`/`viberole` tags on a reused conversation.
+
+    Conversations created before tagging existed show under "no workspace" in
+    the canvas UI; when the manager sends them a follow-up we retro-tag them.
+    PATCH replaces ALL tags, so merge with whatever is already set.
+    """
+    try:
+        r = client.get(
+            f"{AGENT_SERVER}/api/conversations/{req.conversation_id}?include_skills=false",
+            headers=headers,
+        )
+        r.raise_for_status()
+        tags = r.json().get("tags") or {}
+        if tags.get("workspace"):
+            return
+        tags = {"workspace": req.working_dir, "viberole": req.role, **tags}
+        client.patch(
+            f"{AGENT_SERVER}/api/conversations/{req.conversation_id}",
+            headers=headers, json={"tags": tags},
+        ).raise_for_status()
+    except httpx.HTTPError:
+        pass  # tagging is cosmetic; never fail the follow-up over it
+
+
 @app.post("/api/manager/conversations")
 def manager_start_conversation(req: StartConversation):
     """Start a worker/manager conversation (or send a follow-up to an existing one).
@@ -700,6 +725,7 @@ def manager_start_conversation(req: StartConversation):
                 headers=headers, json=message,
             )
             r.raise_for_status()
+            _ensure_workspace_tags(client, headers, req)
             return {"id": req.conversation_id, "followup": True,
                     "conversation_url": f"{CANVAS_BASE}/conversations/{req.conversation_id}"}
         # `workspace` tag = the project path (not the worktree path) so the
