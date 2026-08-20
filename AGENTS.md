@@ -147,11 +147,19 @@ via /etc/nginx/.htpasswd).
   `.session-key` / `.automation-key`, which are now gitignored and exist only
   on disk (the service reads them from the repo root at startup — do not
   delete them). Never commit these files again.
-- Workers in worktrees cannot push to the checked-out `master` branch, so the
-  convention remains: workers commit on a feature branch in their worktree
-  and report branch+commit; the Manager merges that branch into `master` in
-  the main checkout, pushes to origin, and restarts `vibe-manager.service`
-  to deploy.
+- Push-to-main mode (current): workers commit on their worktree branch and
+  push directly to the default branch with `git push origin HEAD:master`
+  (this works from a worktree even though `master` is checked out in the main
+  clone — only a local checkout of `master` is blocked). Deploy = in the main
+  checkout `git pull --ff-only && systemctl restart vibe-manager.service`,
+  then verify `/api/health`. Workers should fetch+rebase onto latest
+  origin/master right before pushing.
+- Agent-server restarts kill in-flight worker tool calls and leave those
+  conversations in `error` state ("A restart occurred while this tool was in
+  progress"). The worktree survives with uncommitted changes; the Manager
+  should check `git log origin/master` / the worktree before deciding — the
+  work may already be landed+deployed (only the final report was lost), or a
+  resume follow-up message restarts the worker where it left off.
 
 - History-rewrite serialization: while a git history rewrite (filter-repo) is
   in flight (ticket 93b58130), do NOT dispatch any other workers — worktree
