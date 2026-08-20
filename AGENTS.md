@@ -128,3 +128,8 @@ via /etc/nginx/.htpasswd).
   in flight (ticket 93b58130), do NOT dispatch any other workers — worktree
   branches based on pre-rewrite hashes get orphaned and merging them would
   reintroduce the purged secret blobs. Queue everything behind the rewrite.
+
+- Manager scheduling note: the SPA is a single static/app.js (no build step), so
+  frontend tickets almost always collide there — the Manager serializes app.js-
+  heavy tickets and tells concurrent workers to fetch+rebase onto latest master
+  before landing.
