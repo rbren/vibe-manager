@@ -44,6 +44,13 @@ via /etc/nginx/.htpasswd).
   under /tmp/conversation-worktrees/<conv_id>/<project>). Manager
   conversations run directly in the workspace (worktree: false) to maintain
   AGENTS.md.
+- Every conversation started via `/api/manager/conversations` gets tags:
+  `workspace=<project path>` (so the canvas UI groups it under the right
+  workspace — the worktree working_dir alone is NOT enough) and
+  `viberole=worker|manager`. Manager conversation ids are also recorded on
+  `workspaces.manager_conversation_id`; the cron bails out if that
+  conversation is still running (tag-verified), so overlapping managers can't
+  happen even if the automation KV state is lost.
 - Conversation creation must use `agent_settings` from
   `GET /api/settings` with header `X-Expose-Secrets: encrypted` +
   `secrets_encrypted: true`, and `tools` forced to `null` (the stored value
