@@ -76,6 +76,19 @@ via /etc/nginx/.htpasswd).
   entries. The automation's mechanical "PR open → needs_input" transition
   skips tickets with undispatched entries so it can't undo a reopen. Tests:
   `tests/test_reopen_on_entry.py`.
+- **Live action summaries**: in_progress tickets show the worker agent's most
+  recent action summary (kanban card + drawer, pulsing dot). `app.py` watches
+  each in_progress conversation server-side: seeds via the agent server's
+  `GET /api/conversations/<id>/events/search` (TIMESTAMP_DESC), then holds a
+  websocket to `ws://…:18000/sockets/events/<id>`; the LLM-predicted `summary`
+  lives inside each ActionEvent's `tool_call.arguments` JSON (see
+  `extract_action_summary`). The cached value rides on the board payload as
+  `latest_action` ({summary, tool, timestamp}) only for in_progress tickets,
+  so the SPA's 5s board poll updates it live and the session API key never
+  reaches the browser. Watchers start on board requests and stop after 5 min
+  without one (`ACTIVITY_IDLE_TTL`). Requires the `websockets` package in the
+  service venv (`.venv/bin/pip install websockets`). Tests:
+  `tests/test_activity_summary.py`.
 - **URL routing**: selecting a workspace pushes `/workspace/<name>` (name =
   directory basename, encodeURIComponent'd) via history.pushState; popstate
   re-selects. On load the SPA prefers the URL's workspace over

@@ -265,6 +265,18 @@ function cardEl(t) {
     el.appendChild(note);
   }
 
+  if (t.status === "in_progress" && t.latest_action?.summary) {
+    const act = document.createElement("div");
+    act.className = "card-activity";
+    act.title = t.latest_action.tool ? `tool: ${t.latest_action.tool}` : "";
+    act.innerHTML = `<span class="activity-dot"></span>`;
+    const text = document.createElement("span");
+    text.className = "activity-text";
+    text.textContent = t.latest_action.summary;
+    act.appendChild(text);
+    el.appendChild(act);
+  }
+
   const meta = document.createElement("div");
   meta.className = "card-meta";
   meta.innerHTML = `<span>#${t.id.slice(0, 6)}</span>`;
@@ -528,6 +540,19 @@ function renderDrawer() {
   const note = $("#drawer-note");
   note.hidden = !t.manager_note;
   note.textContent = t.manager_note ? `⚑ manager: ${t.manager_note}` : "";
+
+  const activity = $("#drawer-activity");
+  const act = t.status === "in_progress" ? t.latest_action : null;
+  activity.hidden = !act?.summary;
+  activity.innerHTML = "";
+  if (act?.summary) {
+    activity.title = act.tool ? `tool: ${act.tool}` : "";
+    activity.innerHTML = `<span class="activity-dot"></span>`;
+    const text = document.createElement("span");
+    text.className = "activity-text";
+    text.textContent = act.summary;
+    activity.appendChild(text);
+  }
 
   const atts = $("#drawer-attachments");
   atts.innerHTML = "";

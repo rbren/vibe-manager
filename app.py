@@ -7,6 +7,7 @@ every minute and drives worker conversations on the agent server.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
@@ -15,12 +16,14 @@ import os
 import re
 import sqlite3
 import tarfile
+import threading
 import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
+import websockets
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -137,6 +140,160 @@ def agent_get(path: str, timeout: float = 15.0) -> dict:
     return r.json()
 
 
+# ------------------------------------------------- live activity (summaries)
+#
+# For in_progress tickets the backend watches the worker conversation's event
+# stream server-side (websocket to the agent server's /sockets/events/<id>)
+# and caches the most recent ActionEvent summary. The board payload carries it
+# as `latest_action`, so the SPA (which polls the board) shows live activity
+# without the session API key ever reaching the browser.
+
+ACTIVITY_IDLE_TTL = 300.0  # stop watching a conversation the board stopped asking about
+_activity_lock = threading.Lock()
+_activity: dict[str, dict] = {}          # conv_id -> {"summary","tool","timestamp"}
+_activity_wanted: dict[str, float] = {}  # conv_id -> last time the board asked
+_activity_tasks: dict[str, object] = {}  # conv_id -> asyncio.Task (or True placeholder)
+_loop: asyncio.AbstractEventLoop | None = None
+
+
+@app.on_event("startup")
+async def _capture_event_loop() -> None:
+    global _loop
+    _loop = asyncio.get_running_loop()
+
+
+def extract_action_summary(event: dict) -> dict | None:
+    """Latest-activity info from an agent-server event, or None.
+
+    ActionEvents carry the LLM-predicted `summary` field either on the parsed
+    `action` or (more commonly) inside the raw `tool_call.arguments` JSON.
+    """
+    if event.get("kind") != "ActionEvent":
+        return None
+    summary = None
+    action = event.get("action")
+    if isinstance(action, dict):
+        summary = action.get("summary")
+    if not summary:
+        args = (event.get("tool_call") or {}).get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                args = None
+        if isinstance(args, dict):
+            summary = args.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        return None
+    return {
+        "summary": summary.strip(),
+        "tool": event.get("tool_name"),
+        "timestamp": event.get("timestamp"),
+    }
+
+
+def get_activity(conv_id: str) -> dict | None:
+    with _activity_lock:
+        info = _activity.get(conv_id)
+        return dict(info) if info else None
+
+
+def _set_activity(conv_id: str, info: dict) -> None:
+    with _activity_lock:
+        _activity[conv_id] = info
+
+
+def _activity_stale(conv_id: str) -> bool:
+    with _activity_lock:
+        wanted = _activity_wanted.get(conv_id, 0.0)
+    return time.time() - wanted > ACTIVITY_IDLE_TTL
+
+
+async def _seed_latest_summary(conv_id: str) -> None:
+    """Prime the cache with the newest ActionEvent summary via the REST API."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            page_id: str | None = None
+            for _ in range(5):
+                params: dict = {"sort_order": "TIMESTAMP_DESC", "limit": 100}
+                if page_id:
+                    params["page_id"] = page_id
+                r = await client.get(
+                    f"{AGENT_SERVER}/api/conversations/{conv_id}/events/search",
+                    headers={"X-Session-API-Key": SESSION_KEY},
+                    params=params,
+                )
+                r.raise_for_status()
+                data = r.json()
+                for event in data.get("items", []):
+                    info = extract_action_summary(event)
+                    if info:
+                        _set_activity(conv_id, info)
+                        return
+                page_id = data.get("next_page_id")
+                if not page_id:
+                    return
+    except Exception as exc:
+        log.warning("activity seed failed for %s: %s", conv_id, exc)
+
+
+async def _stream_events(conv_id: str) -> None:
+    """Hold a websocket to the conversation event stream, caching summaries."""
+    ws_base = AGENT_SERVER.replace("https://", "wss://").replace("http://", "ws://")
+    url = f"{ws_base}/sockets/events/{conv_id}"
+    async with websockets.connect(
+        url, additional_headers={"X-Session-API-Key": SESSION_KEY}
+    ) as ws:
+        while not _activity_stale(conv_id):
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=30)
+            except asyncio.TimeoutError:
+                continue
+            try:
+                info = extract_action_summary(json.loads(raw))
+            except ValueError:
+                continue
+            if info:
+                _set_activity(conv_id, info)
+
+
+async def _watch_conversation(conv_id: str) -> None:
+    try:
+        await _seed_latest_summary(conv_id)
+        while not _activity_stale(conv_id):
+            try:
+                await _stream_events(conv_id)
+            except Exception as exc:
+                log.info("activity stream for %s ended: %s", conv_id, exc)
+            if not _activity_stale(conv_id):
+                await asyncio.sleep(5)
+    finally:
+        with _activity_lock:
+            _activity_tasks.pop(conv_id, None)
+
+
+def note_activity_interest(conv_ids: list[str]) -> None:
+    """Called from board requests: keep watchers alive for these conversations."""
+    if not conv_ids or _loop is None:
+        return
+    now = time.time()
+    with _activity_lock:
+        missing = []
+        for cid in conv_ids:
+            _activity_wanted[cid] = now
+            if cid not in _activity_tasks:
+                _activity_tasks[cid] = True  # placeholder until the task exists
+                missing.append(cid)
+
+    def _start(cid: str) -> None:
+        task = asyncio.get_running_loop().create_task(_watch_conversation(cid))
+        with _activity_lock:
+            _activity_tasks[cid] = task
+
+    for cid in missing:
+        _loop.call_soon_threadsafe(_start, cid)
+
+
 # --------------------------------------------------------------------- models
 
 class SelectWorkspace(BaseModel):
@@ -229,6 +386,11 @@ def ticket_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     d["attachments"] = attachments
     d["conversation_url"] = (
         f"{CANVAS_BASE}/conversations/{row['conversation_id']}" if row["conversation_id"] else None
+    )
+    d["latest_action"] = (
+        get_activity(row["conversation_id"])
+        if row["status"] == "in_progress" and row["conversation_id"]
+        else None
     )
     return d
 
@@ -332,6 +494,10 @@ def get_board(ws_id: str):
                 (ws_id,),
             )
         ]
+    note_activity_interest(
+        [t["conversation_id"] for t in tickets
+         if t["status"] == "in_progress" and t["conversation_id"]]
+    )
     return {"workspace": workspace_dict(ws), "tickets": tickets, "statuses": STATUSES}
 
 
