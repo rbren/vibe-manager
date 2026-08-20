@@ -324,6 +324,19 @@ function renderSettings() {
   renderMgrBadge();
 }
 
+function shortModel(model) {
+  // "anthropic/claude-fable-5" -> "claude-fable-5"; keep the full name in the tooltip.
+  return model.split("/").pop();
+}
+
+function modelChip(model) {
+  const chip = document.createElement("span");
+  chip.className = "chip model";
+  chip.title = model;
+  chip.textContent = `◆ ${shortModel(model)}`;
+  return chip;
+}
+
 function cardEl(t) {
   const firstEntry = t.entries[0]?.body ?? "";
   const el = document.createElement("div");
@@ -373,6 +386,7 @@ function cardEl(t) {
   const meta = document.createElement("div");
   meta.className = "card-meta";
   meta.innerHTML = `<span>#${t.id.slice(0, 6)}</span>`;
+  if (t.llm_model) meta.appendChild(modelChip(t.llm_model));
   if (t.status === "verified" && t.verified_at) {
     const when = document.createElement("span");
     when.className = "chip verified";
@@ -629,6 +643,7 @@ function renderDrawer() {
     a.textContent = "⇡ open pull request";
     links.appendChild(a);
   }
+  if (t.llm_model) links.appendChild(modelChip(t.llm_model));
 
   const note = $("#drawer-note");
   note.hidden = !t.manager_note;

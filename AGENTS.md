@@ -110,6 +110,17 @@ via /etc/nginx/.htpasswd).
   without one (`ACTIVITY_IDLE_TTL`). Requires the `websockets` package in the
   service venv (`.venv/bin/pip install websockets`). Tests:
   `tests/test_activity_summary.py`.
+- **Per-ticket LLM model chip**: every ticket dict with a `conversation_id`
+  carries `llm_model` (from the agent server's conversation metadata,
+  `agent.llm.model` on `GET /api/conversations/<id>`). app.py caches it
+  (`_model_cache`, 5 min TTL) and refreshes in background threads so the 5s
+  board poll never blocks on or hammers the agent server; terminal-status
+  tickets (finished/verified) are sticky — a known model never re-polls. The
+  cache is primed on conversation create and invalidated on follow-up
+  `switch_profile`; a failed refetch keeps the last known model. SPA renders
+  a `.chip.model` (violet tokens) on cards and in the drawer links row —
+  short name (provider prefix stripped), full name in the tooltip. Tests:
+  `tests/test_conversation_model.py`.
 - **Manager automation status badge**: `GET /api/workspaces/<id>/automation`
   proxies the automation backend (GET `/v1/<automation_id>` +
   `/v1/<automation_id>/runs?limit=5`) and returns {configured, enabled,

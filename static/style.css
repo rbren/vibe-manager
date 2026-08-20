@@ -259,6 +259,7 @@ input[type=number] { width: 64px; }
 .chip.entries { color: var(--violet); border-color: var(--violet-line); }
 .chip.attachments { color: var(--amber); border-color: var(--amber-line); }
 .chip.verified { color: var(--accent); border-color: var(--accent-dim); }
+.chip.model { color: var(--violet); border-color: var(--violet-line); }
 .verify-btn {
   display: block; width: 100%; margin-top: 10px;
   background: var(--accent); color: var(--accent-contrast); border: 0; border-radius: 8px;

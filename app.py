@@ -295,6 +295,76 @@ def note_activity_interest(conv_ids: list[str]) -> None:
         _loop.call_soon_threadsafe(_start, cid)
 
 
+# ---------------------------------------------------- conversation LLM model
+#
+# Each ticket with a conversation shows the model that conversation runs on
+# (from the agent server's conversation metadata: agent.llm.model). Fetches
+# happen in background threads and results are cached, so the SPA's 5s board
+# poll never blocks on — or hammers — the agent server, and the session API
+# key stays server-side.
+
+MODEL_CACHE_TTL = 300.0
+_model_lock = threading.Lock()
+_model_cache: dict[str, dict] = {}  # conv_id -> {"model": str|None, "fetched_at": float}
+_model_inflight: set[str] = set()
+
+
+def extract_conversation_model(meta: dict) -> str | None:
+    """The LLM model name from conversation metadata, or None."""
+    agent = meta.get("agent")
+    llm = agent.get("llm") if isinstance(agent, dict) else None
+    model = llm.get("model") if isinstance(llm, dict) else None
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return None
+
+
+def _prime_model_cache(conv_id: str, model: str | None) -> None:
+    if not model:
+        return
+    with _model_lock:
+        _model_cache[conv_id] = {"model": model, "fetched_at": time.time()}
+
+
+def _invalidate_model_cache(conv_id: str) -> None:
+    with _model_lock:
+        _model_cache.pop(conv_id, None)
+
+
+def _fetch_model(conv_id: str) -> None:
+    model = None
+    try:
+        meta = agent_get(f"/api/conversations/{conv_id}?include_skills=false", timeout=30)
+        model = extract_conversation_model(meta)
+    except Exception as exc:
+        log.info("model fetch failed for %s: %s", conv_id, exc)
+    with _model_lock:
+        prev = _model_cache.get(conv_id)
+        if model is None and prev and prev.get("model"):
+            model = prev["model"]  # keep last known on transient failures
+        _model_cache[conv_id] = {"model": model, "fetched_at": time.time()}
+        _model_inflight.discard(conv_id)
+
+
+def get_conversation_model(conv_id: str, sticky: bool = False) -> str | None:
+    """Cached model for a conversation; refreshes in the background when stale.
+
+    `sticky` (terminal-status tickets): a known model never expires — the
+    conversation won't switch models anymore, so don't re-poll the agent
+    server for it.
+    """
+    now = time.time()
+    with _model_lock:
+        entry = _model_cache.get(conv_id)
+        model = entry["model"] if entry else None
+        fresh = entry is not None and now - entry["fetched_at"] < MODEL_CACHE_TTL
+        if (sticky and model) or fresh or conv_id in _model_inflight:
+            return model
+        _model_inflight.add(conv_id)
+    threading.Thread(target=_fetch_model, args=(conv_id,), daemon=True).start()
+    return model
+
+
 # --------------------------------------------------------------------- models
 
 class SelectWorkspace(BaseModel):
@@ -395,6 +465,14 @@ def ticket_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     d["latest_action"] = (
         get_activity(row["conversation_id"])
         if row["status"] == "in_progress" and row["conversation_id"]
+        else None
+    )
+    d["llm_model"] = (
+        get_conversation_model(
+            row["conversation_id"],
+            sticky=row["status"] in ("finished", VERIFIED),
+        )
+        if row["conversation_id"]
         else None
     )
     return d
@@ -896,6 +974,8 @@ def manager_start_conversation(req: StartConversation):
                         f"{r.json().get('detail')}; available: {names}",
                     )
                 r.raise_for_status()
+                # The conversation now runs on a different model.
+                _invalidate_model_cache(req.conversation_id)
             message = {"role": "user", "content": [{"text": prompt}], "run": True}
             r = client.post(
                 f"{AGENT_SERVER}/api/conversations/{req.conversation_id}/events",
@@ -942,6 +1022,7 @@ def manager_start_conversation(req: StartConversation):
                 _git(Path(req.working_dir), "branch", "-D", wt["branch"])
             raise
         conv_id = r.json()["id"]
+        _prime_model_cache(conv_id, (agent_settings.get("llm") or {}).get("model"))
         if req.role == "manager":
             with db() as conn:
                 conn.execute(
