@@ -122,7 +122,7 @@ async function loadWorkspaces() {
     for (const w of data.selected) {
       const o = document.createElement("option");
       o.value = w.path;
-      o.textContent = `${w.name}  ·  ${w.path}`;
+      o.textContent = w.name;
       og.appendChild(o);
     }
     sel.appendChild(og);
@@ -134,7 +134,7 @@ async function loadWorkspaces() {
     for (const a of avail) {
       const o = document.createElement("option");
       o.value = a.path;
-      o.textContent = `${a.name}${a.is_git ? "" : "  (not git)"}  ·  ${a.path}`;
+      o.textContent = `${a.name}${a.is_git ? "" : "  (not git)"}`;
       og.appendChild(o);
     }
     sel.appendChild(og);

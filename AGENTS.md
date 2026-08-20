@@ -12,11 +12,12 @@ via /etc/nginx/.htpasswd).
   SQLite at `./vibe.db`. Serves the SPA from `static/` under `/assets`.
   - Public API (`/api/...`): workspace picker, settings (max_concurrent,
     push_mode pr|main), ticket CRUD (append-only entries), priority reorder.
-  - Workspace picker (`GET /api/workspaces`) deliberately does NOT scan
-    workspace-parent directories for children (removed 2026-05 per user
-    request): `available` only contains agent-server-registered workspaces,
-    plus already-`selected` ones from vibe.db. New workspaces can still be
-    onboarded via `POST /api/workspaces {path}` directly.
+  - Workspace picker (`GET /api/workspaces`): `available` = children of the
+    agent-server workspace parents (e.g. /root/git/*) + agent-server-
+    registered workspaces; `selected` = already-onboarded ones from vibe.db.
+    The SPA picker deliberately shows ONLY the workspace name (no directory
+    path like /root/git/foo — user request 2026-05); option values are still
+    full paths.
   - Manager API (`/api/manager/...`): board snapshot, ticket PATCH
     (status/conversation_id/pr_url/manager_note/dispatched_entry_count/
     append_entry), `POST /api/manager/conversations` to start/follow-up worker
