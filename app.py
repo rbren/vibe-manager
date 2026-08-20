@@ -699,3 +699,9 @@ app.mount("/assets", StaticFiles(directory=ROOT / "static"), name="assets")
 @app.get("/")
 def index():
     return FileResponse(ROOT / "static" / "index.html")
+
+
+@app.get("/workspace/{_workspace:path}")
+def workspace_index(_workspace: str):
+    """SPA deep-link: /workspace/<name> serves the index; the JS picks the workspace."""
+    return FileResponse(ROOT / "static" / "index.html")

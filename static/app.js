@@ -140,10 +140,33 @@ async function loadWorkspaces() {
   sel.value = current || (localStorage.getItem("vibe.workspace") ?? "");
 }
 
-async function selectWorkspace(path) {
+/* URL scheme: /workspace/<name> deep-links to a workspace (SPA route). */
+function workspaceURL(name) {
+  return name ? `/workspace/${encodeURIComponent(name)}` : "/";
+}
+
+function workspaceNameFromURL() {
+  const m = location.pathname.match(/^\/workspace\/([^/]+)/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+function workspacePathFromName(name) {
+  const all = [...(state.workspaces.selected || []), ...(state.workspaces.available || [])];
+  return all.find((w) => w.name === name)?.path ?? null;
+}
+
+function syncURL(mode) {
+  if (mode === "none") return;
+  const url = workspaceURL(state.ws?.name);
+  if (mode === "replace") history.replaceState({}, "", url);
+  else if (location.pathname !== url) history.pushState({}, "", url);
+}
+
+async function selectWorkspace(path, { historyMode = "push" } = {}) {
   if (!path) {
     state.ws = null;
     localStorage.removeItem("vibe.workspace");
+    syncURL(historyMode);
     render();
     return;
   }
@@ -154,6 +177,7 @@ async function selectWorkspace(path) {
     });
     state.ws = ws;
     localStorage.setItem("vibe.workspace", path);
+    syncURL(historyMode);
     if (ws.automation_id) toast("manager automation active ✓");
     else toast("workspace selected — manager automation could not be created", true);
     await refreshBoard();
@@ -608,12 +632,26 @@ function wire() {
 
 async function init() {
   wire();
+  window.addEventListener("popstate", async () => {
+    const name = workspaceNameFromURL();
+    const path = name ? workspacePathFromName(name) : null;
+    $("#workspace-select").value = path || "";
+    await selectWorkspace(path || "", { historyMode: "none" });
+  });
   await loadWorkspaces();
+
+  const urlName = workspaceNameFromURL();
+  const urlPath = urlName ? workspacePathFromName(urlName) : null;
   const saved = localStorage.getItem("vibe.workspace");
-  if (saved && [...$("#workspace-select").options].some((o) => o.value === saved)) {
-    $("#workspace-select").value = saved;
-    await selectWorkspace(saved);
+  const savedOk = saved && [...$("#workspace-select").options].some((o) => o.value === saved);
+  const target = urlPath || (savedOk ? saved : null);
+
+  if (target) {
+    $("#workspace-select").value = target;
+    await selectWorkspace(target, { historyMode: "replace" });
   } else {
+    if (urlName) toast(`unknown workspace: ${urlName}`, true);
+    history.replaceState({}, "", "/");
     render();
   }
 }

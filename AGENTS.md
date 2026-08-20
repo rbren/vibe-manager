@@ -68,6 +68,14 @@ via /etc/nginx/.htpasswd).
   entries. The automation's mechanical "PR open → needs_input" transition
   skips tickets with undispatched entries so it can't undo a reopen. Tests:
   `tests/test_reopen_on_entry.py`.
+- **URL routing**: selecting a workspace pushes `/workspace/<name>` (name =
+  directory basename, encodeURIComponent'd) via history.pushState; popstate
+  re-selects. On load the SPA prefers the URL's workspace over
+  localStorage (`vibe.workspace`), resolving name → path from the
+  /api/workspaces lists. `app.py` serves the SPA index for `GET
+  /workspace/{path:path}` so deep links work (nginx proxies everything, no
+  nginx change needed). Asset URLs are absolute (`/assets/...`) so nested
+  paths render fine.
 - `static/` â€” vanilla JS SPA (no build step). Kanban columns: pending,
   in_progress, needs_input, finished. Drag vertically to reprioritize; click
   a card for the append-only drawer; each card links to its conversation.
