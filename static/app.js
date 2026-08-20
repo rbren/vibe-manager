@@ -12,6 +12,7 @@ const state = {
   pollTimer: null,
   dragging: null,        // { id, status }
   showVerified: localStorage.getItem("vibe.showVerified") === "1",
+  newTicketFiles: [],    // File objects staged for the next ticket
 };
 
 const STATUS_LABEL = {
@@ -35,6 +36,60 @@ async function api(path, opts = {}) {
     throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
   }
   return res.json();
+}
+
+/* ------------------------------------------------------------ attachments */
+
+// Raw-body upload (no multipart): file bytes as the POST body, name in query.
+async function uploadAttachment(ticketId, file) {
+  const res = await fetch(
+    `/api/tickets/${ticketId}/attachments?filename=${encodeURIComponent(file.name)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    },
+  );
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch {}
+    throw new Error(`${file.name}: ${detail}`);
+  }
+  return res.json();
+}
+
+function fmtSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function isImage(contentType) {
+  return (contentType || "").startsWith("image/");
+}
+
+function attachmentEl(a) {
+  const link = document.createElement("a");
+  link.href = a.url;
+  link.target = "_blank";
+  link.rel = "noopener";
+  link.title = `${a.filename} · ${fmtSize(a.size)}`;
+  if (isImage(a.content_type)) {
+    link.className = "att att-thumb";
+    const img = document.createElement("img");
+    img.src = a.url;
+    img.alt = a.filename;
+    img.loading = "lazy";
+    link.appendChild(img);
+  } else {
+    link.className = "att att-file";
+    link.textContent = `📎 ${a.filename}`;
+  }
+  const size = document.createElement("span");
+  size.className = "att-size";
+  size.textContent = isImage(a.content_type) ? "" : ` ${fmtSize(a.size)}`;
+  link.appendChild(size);
+  return link;
 }
 
 /* ---------------------------------------------------------------- toast */
@@ -194,6 +249,12 @@ function cardEl(t) {
     chip.textContent = `✎ ${t.entries.length}`;
     meta.appendChild(chip);
   }
+  if ((t.attachments || []).length) {
+    const chip = document.createElement("span");
+    chip.className = "chip attachments";
+    chip.textContent = `📎 ${t.attachments.length}`;
+    meta.appendChild(chip);
+  }
   if (t.conversation_url) {
     const a = document.createElement("a");
     a.className = "chip convo";
@@ -306,18 +367,60 @@ async function submitTicket() {
   const btn = $("#new-ticket-submit");
   btn.disabled = true;
   try {
-    await api(`/api/workspaces/${state.ws.id}/tickets`, {
+    const ticket = await api(`/api/workspaces/${state.ws.id}/tickets`, {
       method: "POST",
       body: JSON.stringify({ body }),
     });
     ta.value = "";
-    toast("ticket submitted — manager will pick it up");
+    const files = state.newTicketFiles.splice(0);
+    renderNewTicketFiles();
+    const failed = [];
+    for (const f of files) {
+      try { await uploadAttachment(ticket.id, f); }
+      catch (e) { failed.push(e.message); }
+    }
+    if (failed.length) toast(`ticket submitted, but upload failed: ${failed.join("; ")}`, true);
+    else toast("ticket submitted — manager will pick it up");
     await refreshBoard();
   } catch (e) {
     toast(`submit failed: ${e.message}`, true);
   } finally {
     btn.disabled = false;
   }
+}
+
+function renderNewTicketFiles() {
+  const wrap = $("#new-ticket-files");
+  wrap.innerHTML = "";
+  wrap.hidden = !state.newTicketFiles.length;
+  state.newTicketFiles.forEach((f, i) => {
+    const chip = document.createElement("span");
+    chip.className = "file-chip";
+    chip.textContent = `${isImage(f.type) ? "🖼" : "📎"} ${f.name} · ${fmtSize(f.size)}`;
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "file-chip-rm";
+    rm.textContent = "✕";
+    rm.title = "remove";
+    rm.addEventListener("click", () => {
+      state.newTicketFiles.splice(i, 1);
+      renderNewTicketFiles();
+    });
+    chip.appendChild(rm);
+    wrap.appendChild(chip);
+  });
+}
+
+async function uploadDrawerFiles(files) {
+  if (!state.drawerTicketId || !files.length) return;
+  const failed = [];
+  for (const f of files) {
+    try { await uploadAttachment(state.drawerTicketId, f); }
+    catch (e) { failed.push(e.message); }
+  }
+  if (failed.length) toast(`upload failed: ${failed.join("; ")}`, true);
+  else toast(`${files.length} attachment${files.length > 1 ? "s" : ""} added`);
+  await refreshBoard();
 }
 
 async function verifyTicket(id) {
@@ -391,6 +494,11 @@ function renderDrawer() {
   const note = $("#drawer-note");
   note.hidden = !t.manager_note;
   note.textContent = t.manager_note ? `⚑ manager: ${t.manager_note}` : "";
+
+  const atts = $("#drawer-attachments");
+  atts.innerHTML = "";
+  atts.hidden = !(t.attachments || []).length;
+  for (const a of t.attachments || []) atts.appendChild(attachmentEl(a));
 
   const thread = $("#drawer-thread");
   const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 40;
@@ -466,8 +574,22 @@ function wire() {
   $("#new-ticket-form").addEventListener("submit", (e) => { e.preventDefault(); submitTicket(); });
   $("#new-ticket-body").addEventListener("keydown", ticketKeydown(submitTicket));
 
+  $("#new-ticket-attach").addEventListener("click", () => $("#new-ticket-file-input").click());
+  $("#new-ticket-file-input").addEventListener("change", (e) => {
+    state.newTicketFiles.push(...e.target.files);
+    e.target.value = "";
+    renderNewTicketFiles();
+  });
+
   $("#append-form").addEventListener("submit", (e) => { e.preventDefault(); appendEntry(); });
   $("#append-body").addEventListener("keydown", ticketKeydown(appendEntry));
+
+  $("#drawer-attach").addEventListener("click", () => $("#drawer-file-input").click());
+  $("#drawer-file-input").addEventListener("change", async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    await uploadDrawerFiles(files);
+  });
 
   $("#drawer-close").addEventListener("click", closeDrawer);
   $("#drawer-backdrop").addEventListener("click", closeDrawer);
