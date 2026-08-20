@@ -14,21 +14,18 @@
   <div class="brand">
     <span class="brand-glyph">▞▞</span>
     <span class="brand-name">vibe</span>
-    <span class="brand-sub">work manager</span>
   </div>
 
   <div class="topbar-controls">
     <div class="control">
-      <label for="workspace-select">workspace</label>
-      <select id="workspace-select"><option value="">— pick a workspace —</option></select>
+      <select id="workspace-select" aria-label="workspace"><option value="">— pick a workspace —</option></select>
     </div>
     <div class="control" id="ctl-concurrency" hidden>
-      <label for="max-concurrent">max&nbsp;concurrent</label>
+      <label for="max-concurrent">concurrency</label>
       <input id="max-concurrent" type="number" min="1" max="20" value="3">
     </div>
     <div class="control" id="ctl-pushmode" hidden>
-      <label>changes</label>
-      <div class="seg" id="push-mode">
+      <div class="seg" id="push-mode" aria-label="changes">
         <button data-mode="pr" class="seg-btn">pull request</button>
         <button data-mode="main" class="seg-btn">push to main</button>
       </div>
