@@ -479,6 +479,55 @@ def update_workspace(ws_id: str, req: WorkspaceSettings):
         return workspace_dict(conn.execute("SELECT * FROM workspaces WHERE id=?", (ws_id,)).fetchone())
 
 
+@app.get("/api/workspaces/{ws_id}/automation")
+def automation_status(ws_id: str):
+    """Status of the workspace's manager cron automation (+ manager conversation)."""
+    with db() as conn:
+        ws_row = conn.execute("SELECT * FROM workspaces WHERE id=?", (ws_id,)).fetchone()
+    if not ws_row:
+        raise HTTPException(404, "workspace not found")
+    ws = workspace_dict(ws_row)
+    automation_id = ws.get("automation_id")
+    out: dict = {
+        "automation_id": automation_id,
+        "configured": bool(automation_id),
+        "enabled": None,
+        "last_triggered_at": None,
+        "run_active": False,
+        "last_run": None,
+        "manager_conversation": None,
+        "error": None,
+    }
+    if not automation_id:
+        return out
+    try:
+        with httpx.Client(base_url=AUTOMATION_API, headers=_automation_headers(), timeout=10) as client:
+            r = client.get(f"/v1/{automation_id}")
+            r.raise_for_status()
+            auto = r.json()
+            out["enabled"] = auto.get("enabled")
+            out["last_triggered_at"] = auto.get("last_triggered_at")
+            runs = client.get(f"/v1/{automation_id}/runs", params={"limit": 5}).json().get("runs", [])
+            out["run_active"] = any(run.get("completed_at") is None for run in runs)
+            if runs:
+                last = runs[0]
+                out["last_run"] = {
+                    k: last.get(k)
+                    for k in ("status", "error_detail", "created_at", "started_at", "completed_at")
+                }
+    except httpx.HTTPError as exc:
+        out["error"] = f"automation backend unreachable: {exc}"
+    conv_id = ws.get("manager_conversation_id")
+    if conv_id:
+        try:
+            conv = agent_get(f"/api/conversations/{conv_id}?include_skills=false", timeout=10)
+            conv_status = conv.get("execution_status", "unknown")
+        except Exception:
+            conv_status = "unknown"
+        out["manager_conversation"] = {"id": conv_id, "status": conv_status}
+    return out
+
+
 # ----------------------------------------------------------------------- board
 
 @app.get("/api/workspaces/{ws_id}/board")

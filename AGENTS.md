@@ -89,6 +89,22 @@ via /etc/nginx/.htpasswd).
   without one (`ACTIVITY_IDLE_TTL`). Requires the `websockets` package in the
   service venv (`.venv/bin/pip install websockets`). Tests:
   `tests/test_activity_summary.py`.
+- **Manager automation status badge**: `GET /api/workspaces/<id>/automation`
+  proxies the automation backend (GET `/v1/<automation_id>` +
+  `/v1/<automation_id>/runs?limit=5`) and returns {configured, enabled,
+  last_triggered_at, run_active (any run without completed_at), last_run
+  {status/error_detail/timestamps}, manager_conversation {id, status} from the
+  agent server via `workspaces.manager_conversation_id`, error}. Automation
+  backend failures degrade to `error` (still 200) so the UI can show
+  "unknown" instead of breaking. The SPA polls it every 15s and renders the
+  topbar `#mgr-badge` as: working (manager conversation running, pulsing) /
+  polling (automation run active) / ✓|✗ + relative last-run time / paused
+  (disabled) / unknown (backend error); details in the badge tooltip. CSS
+  variants `.mgr-badge.ok|.err|.paused`. Tests:
+  `tests/test_automation_status.py` (stub automation backend on a local
+  port via VIBE_AUTOMATION_API; run with the service venv — note tests
+  import app.py, which needs `.session-key`/`.automation-key` in the repo
+  root, so run them from the main checkout).
 - **URL routing**: selecting a workspace pushes `/workspace/<name>` (name =
   directory basename, encodeURIComponent'd) via history.pushState; popstate
   re-selects. On load the SPA prefers the URL's workspace over

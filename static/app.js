@@ -10,6 +10,8 @@ const state = {
   tickets: [],
   drawerTicketId: null,
   pollTimer: null,
+  automation: null,      // manager automation status for the selected workspace
+  automationTimer: null,
   dragging: null,        // { id, status }
   showVerified: localStorage.getItem("vibe.showVerified") === "1",
   newTicketFiles: [],    // File objects staged for the next ticket
@@ -176,6 +178,7 @@ async function selectWorkspace(path, { historyMode = "push" } = {}) {
       body: JSON.stringify({ path }),
     });
     state.ws = ws;
+    state.automation = null;
     localStorage.setItem("vibe.workspace", path);
     syncURL(historyMode);
     if (ws.automation_id) toast("manager automation active ✓");
@@ -209,6 +212,75 @@ async function refreshBoard() {
 function startPolling() {
   clearInterval(state.pollTimer);
   state.pollTimer = setInterval(refreshBoard, 5000);
+  clearInterval(state.automationTimer);
+  state.automationTimer = setInterval(refreshAutomation, 15000);
+  refreshAutomation();
+}
+
+/* ------------------------------------------------- manager automation badge */
+
+async function refreshAutomation() {
+  if (!state.ws) return;
+  try {
+    state.automation = await api(`/api/workspaces/${state.ws.id}/automation`);
+  } catch (e) {
+    console.error(e);
+  }
+  renderMgrBadge();
+}
+
+function fmtAgo(iso) {
+  if (!iso) return "";
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return `${Math.round(s)}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+
+function renderMgrBadge() {
+  const badge = $("#mgr-badge");
+  if (!state.ws || !state.ws.automation_id) { badge.hidden = true; return; }
+  badge.hidden = false;
+  badge.classList.remove("ok", "err", "paused");
+  const a = state.automation;
+  const text = $("#mgr-text");
+  if (!a || a.automation_id !== state.ws.automation_id) {
+    text.textContent = "manager";
+    badge.title = "Manager automation active for this workspace";
+    return;
+  }
+  const lr = a.last_run;
+  const lastWhen = lr ? fmtAgo(lr.completed_at || lr.started_at || lr.created_at) : "";
+  const convRunning = a.manager_conversation?.status === "running";
+  const tip = [];
+  let label, cls = "";
+  if (a.error) {
+    label = "manager: unknown"; cls = "err"; tip.push(a.error);
+  } else if (a.enabled === false) {
+    label = "manager: paused"; cls = "paused"; tip.push("Automation is disabled");
+  } else if (convRunning) {
+    label = "manager: working";
+    tip.push("Manager agent conversation is running right now");
+  } else if (a.run_active) {
+    label = "manager: polling";
+    tip.push("Automation run in progress");
+  } else if (lr) {
+    const failed = lr.status && lr.status !== "COMPLETED";
+    label = `manager ${failed ? "✗" : "✓"} ${lastWhen}`;
+    cls = failed ? "err" : "ok";
+  } else {
+    label = "manager";
+  }
+  if (lr) {
+    tip.push(`last run: ${(lr.status || "?").toLowerCase()} ${lastWhen}`.trim());
+    if (lr.error_detail) tip.push(`error: ${lr.error_detail}`);
+  }
+  if (a.last_triggered_at) tip.push(`last triggered ${fmtAgo(a.last_triggered_at)}`);
+  if (a.manager_conversation) tip.push(`manager agent: ${a.manager_conversation.status}`);
+  text.textContent = label;
+  if (cls) badge.classList.add(cls);
+  badge.title = tip.join("\n") || "Manager automation active for this workspace";
 }
 
 function render() {
@@ -218,7 +290,7 @@ function render() {
   $("#ctl-concurrency").hidden = !has;
   $("#ctl-pushmode").hidden = !has;
   $("#show-verified").hidden = !has;
-  $("#mgr-badge").hidden = !(has && state.ws.automation_id);
+  renderMgrBadge();
   if (has) { renderBoard(); renderSettings(); }
 }
 
@@ -228,7 +300,7 @@ function renderSettings() {
   if (document.activeElement !== mc) mc.value = state.ws.max_concurrent;
   $$("#push-mode .seg-btn").forEach((b) =>
     b.classList.toggle("active", b.dataset.mode === state.ws.push_mode));
-  $("#mgr-badge").hidden = !state.ws.automation_id;
+  renderMgrBadge();
 }
 
 function cardEl(t) {

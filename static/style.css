@@ -79,8 +79,13 @@ input[type=number] { width: 64px; }
   color: var(--accent); border: 1px solid var(--accent-dim);
   padding: 6px 12px; border-radius: 999px;
 }
-.pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 2s infinite; }
+.pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 2s infinite; flex: none; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+.mgr-badge.ok .pulse { animation: none; }
+.mgr-badge.err { color: var(--rose); border-color: rgba(255,122,156,.4); }
+.mgr-badge.err .pulse { background: var(--rose); animation: none; }
+.mgr-badge.paused { color: var(--text-dim); border-color: var(--line); }
+.mgr-badge.paused .pulse { background: var(--text-faint); animation: none; }
 
 /* ------------------------------------------------------------- empty state */
 #empty-state { display: grid; place-items: center; min-height: 70vh; }
