@@ -12,6 +12,7 @@ import io
 import json
 import logging
 import os
+import re
 import sqlite3
 import tarfile
 import time
@@ -20,7 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -29,7 +30,10 @@ log = logging.getLogger("vibe")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 ROOT = Path(__file__).resolve().parent
-DB_PATH = ROOT / "vibe.db"
+DB_PATH = Path(os.environ.get("VIBE_DB_PATH", str(ROOT / "vibe.db")))
+DATA_DIR = Path(os.environ.get("VIBE_DATA_DIR", str(ROOT / "data")))
+ATTACHMENTS_DIR = DATA_DIR / "attachments"
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 AGENT_SERVER = os.environ.get("VIBE_AGENT_SERVER", "http://127.0.0.1:18000")
 AUTOMATION_API = os.environ.get("VIBE_AUTOMATION_API", "http://127.0.0.1:18001/api/automation")
 VIBE_API = os.environ.get("VIBE_SELF_URL", "http://127.0.0.1:18300")
@@ -95,6 +99,14 @@ def init_db() -> None:
                 ticket_id TEXT NOT NULL REFERENCES tickets(id),
                 author TEXT NOT NULL DEFAULT 'user',
                 body TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS attachments(
+                id TEXT PRIMARY KEY,
+                ticket_id TEXT NOT NULL REFERENCES tickets(id),
+                filename TEXT NOT NULL,
+                content_type TEXT,
+                size INTEGER NOT NULL,
                 created_at REAL NOT NULL
             );
             """
@@ -167,6 +179,29 @@ class StartConversation(BaseModel):
     tags: dict[str, str] | None = None
 
 
+# ---------------------------------------------------------------- attachments
+
+_FILENAME_UNSAFE = re.compile(r"[^A-Za-z0-9._ ()\[\]-]+")
+
+
+def safe_filename(name: str) -> str:
+    name = Path(name.replace("\\", "/")).name.strip()
+    name = _FILENAME_UNSAFE.sub("_", name)[:120].strip("._ ")
+    return name or "file"
+
+
+def attachment_disk_path(att_id: str, filename: str) -> Path:
+    return ATTACHMENTS_DIR / att_id / filename
+
+
+def attachment_dict(row: sqlite3.Row) -> dict:
+    d = dict(row)
+    d["url"] = f"/api/attachments/{row['id']}"
+    # Stable absolute path on this machine — workers in worktrees can read it.
+    d["path"] = str(attachment_disk_path(row["id"], row["filename"]))
+    return d
+
+
 # ------------------------------------------------------------------ serializers
 
 def ticket_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
@@ -177,8 +212,17 @@ def ticket_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
             (row["id"],),
         )
     ]
+    attachments = [
+        attachment_dict(a)
+        for a in conn.execute(
+            "SELECT id, filename, content_type, size, created_at FROM attachments "
+            "WHERE ticket_id=? ORDER BY created_at",
+            (row["id"],),
+        )
+    ]
     d = dict(row)
     d["entries"] = entries
+    d["attachments"] = attachments
     d["conversation_url"] = (
         f"{CANVAS_BASE}/conversations/{row['conversation_id']}" if row["conversation_id"] else None
     )
@@ -332,6 +376,56 @@ def append_entry(ticket_id: str, req: NewEntry):
         conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (now, ticket_id))
         conn.commit()
         return ticket_dict(conn, conn.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone())
+
+
+@app.post("/api/tickets/{ticket_id}/attachments")
+async def upload_attachment(ticket_id: str, request: Request, filename: str = "file"):
+    """Attach a file to a ticket. Raw request body = file bytes (no multipart,
+    so no python-multipart dependency); original filename via ?filename=."""
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "empty attachment")
+    if len(data) > MAX_ATTACHMENT_BYTES:
+        raise HTTPException(413, f"attachment too large (max {MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB)")
+    content_type = request.headers.get("content-type") or "application/octet-stream"
+    now = time.time()
+    att_id = uuid.uuid4().hex[:12]
+    fname = safe_filename(filename)
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM tickets WHERE id=?", (ticket_id,)).fetchone():
+            raise HTTPException(404, "ticket not found")
+        path = attachment_disk_path(att_id, fname)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        conn.execute(
+            "INSERT INTO attachments(id, ticket_id, filename, content_type, size, created_at) VALUES(?,?,?,?,?,?)",
+            (att_id, ticket_id, fname, content_type, len(data), now),
+        )
+        conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (now, ticket_id))
+        conn.commit()
+        return attachment_dict(
+            conn.execute(
+                "SELECT id, filename, content_type, size, created_at FROM attachments WHERE id=?",
+                (att_id,),
+            ).fetchone()
+        )
+
+
+@app.get("/api/attachments/{att_id}")
+def download_attachment(att_id: str):
+    with db() as conn:
+        row = conn.execute("SELECT * FROM attachments WHERE id=?", (att_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "attachment not found")
+    path = attachment_disk_path(row["id"], row["filename"])
+    if not path.is_file():
+        raise HTTPException(404, "attachment file missing on disk")
+    return FileResponse(
+        path,
+        media_type=row["content_type"] or "application/octet-stream",
+        filename=row["filename"],
+        content_disposition_type="inline",
+    )
 
 
 @app.post("/api/tickets/{ticket_id}/verify")

@@ -269,6 +269,7 @@ def fingerprint(ws: dict, tickets: list[dict]) -> str:
             ":".join(str(x) for x in (
                 t["id"], t["status"], len(t["entries"]), t.get("dispatched_entry_count", 0),
                 t.get("conversation_id"), t.get("conv_status"), t.get("pr_url"), t.get("pr_state"),
+                ",".join(a["id"] for a in t.get("attachments", [])),
             ))
         )
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
@@ -337,6 +338,16 @@ def build_manager_prompt(ws: dict, tickets: list[dict]) -> str:
                     {"author": e["author"], "body": e["body"], "created_at": e["created_at"]}
                     for e in t["entries"]
                 ],
+                "attachments": [
+                    {
+                        "filename": a["filename"],
+                        "path": a["path"],
+                        "url": f"{VIBE_API}{a['url']}",
+                        "content_type": a.get("content_type"),
+                        "size": a.get("size"),
+                    }
+                    for a in t.get("attachments", [])
+                ],
             }
             for t in tickets
         ],
@@ -396,6 +407,7 @@ Agent server API (read-only inspection): base `{AGENT_SERVER}`, header `X-Sessio
    - **Deferral contract**: if you deliberately leave a pending ticket undispatched (conflict serialization, capacity, needs another ticket first), you MUST set a manager_note on it (e.g. "queued behind a1b2c3 to avoid conflicts in the audio engine"). This suppresses re-invocation loops. Clear/replace the note when you later dispatch it.
    - **Reuse old conversations when sensible**: if a new ticket clearly refines or extends work a recent conversation did (check other tickets' conversation ids and topics), send it as a follow-up to that conversation instead of starting fresh — the accumulated context helps. Then PATCH that conversation id onto the new ticket.
 5. Worker task prompts must be self-contained: the full ticket text (all user entries), the project path, a reminder to read AGENTS.md first, the push-mode instructions above (branch+PR, or push directly to main), and — in PR mode — to report the PR URL in their final message.
+   - **Attachments**: tickets may carry file/image attachments (see each ticket's `attachments` array). Each has a stable absolute `path` on this machine, readable from worker worktrees. In the worker prompt, list every attachment as `<filename> (<content_type>) at <path>` and tell the worker to read/view it from that path (agents can view images with the file viewer). Workers must `cp` an attachment into their worktree only if it should become part of the repo. Never inline file contents into the prompt yourself.
 6. Update every card you acted on: status, conversation_id, manager_note (short, user-facing), dispatched_entry_count, and append_entry comments where the user needs context. Every ticket you dispatch MUST get its conversation_id set so the card links to its conversation.
 7. Do not wait for workers to finish — dispatch and exit. You will be re-invoked automatically when statuses change.
 

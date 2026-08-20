@@ -29,6 +29,33 @@ via /etc/nginx/.htpasswd).
   - Deferral contract: if the Manager deliberately does NOT dispatch a pending
     ticket it must set `manager_note`, which suppresses the dispatchable
     signal until the board changes.
+- **Ticket attachments**: users can attach files/images to tickets (paperclip
+  button on the new-ticket form and in the drawer's append form; drawer shows
+  image thumbnails + file chips, cards show a count chip). `attachments`
+  table (id, ticket_id, filename, content_type, size, created_at); bytes on
+  disk at `data/attachments/<att_id>/<filename>` (gitignored; env overrides
+  `VIBE_DATA_DIR` / `VIBE_DB_PATH` exist for tests).
+  - Upload is a **raw-body POST** `/api/tickets/<id>/attachments?filename=...`
+    (Content-Type header = file type, 25 MB cap) - deliberately NOT multipart
+    so python-multipart isn't a dependency of the service venv. Download:
+    `GET /api/attachments/<att_id>` (inline disposition). Filenames are
+    sanitized (basename + safe-char whitelist).
+  - Every ticket dict (board AND manager snapshot) carries `attachments`,
+    each with `url` (relative API URL) and `path` - a **stable absolute
+    path** under the vibe-manager checkout. Manager-to-worker handoff design:
+    workers run on the same machine, so the manager just lists each
+    attachment's `path` in the worker prompt (automation/main.py prompt item
+    5); workers read/view the files in place and only `cp` one into their
+    worktree if it should become part of the repo. Attachment ids feed the
+    automation fingerprint, so an upload re-triggers the manager (an
+    attachment-only change still needs an actionable signal, e.g. an
+    undispatched pending ticket or a new entry).
+  - Tests: `tests/test_attachments.py` (plain script, run with
+    `.venv/bin/python tests/test_attachments.py`; uses a temp DB/data dir).
+  - nginx: `client_max_body_size 26m` was added to the site config for
+    uploads - re-copy `nginx/vibe.apps.canvas.rbren.io` to sites-available
+    and reload nginx when deploying this feature.
+
 - `static/` â€” vanilla JS SPA (no build step). Kanban columns: pending,
   in_progress, needs_input, finished. Drag vertically to reprioritize; click
   a card for the append-only drawer; each card links to its conversation.

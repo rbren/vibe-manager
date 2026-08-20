@@ -94,9 +94,29 @@ input[type=number] { width: 64px; }
 /* ------------------------------------------------------------- ticket form */
 #board-wrap { padding: 22px; }
 #new-ticket-form {
-  display: flex; gap: 12px; align-items: stretch;
+  display: flex; flex-direction: column; gap: 8px;
   max-width: 980px; margin: 0 auto 26px;
 }
+.ticket-form-row { display: flex; gap: 12px; align-items: stretch; }
+.attach-btn {
+  background: var(--bg-raise); color: var(--text-dim);
+  border: 1px solid var(--line); border-radius: 12px;
+  font-size: 16px; padding: 0 14px; cursor: pointer;
+}
+.attach-btn:hover { color: var(--accent); border-color: var(--accent-dim); }
+.file-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.file-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+  background: var(--bg-raise); border: 1px solid var(--line);
+  border-radius: 999px; padding: 4px 6px 4px 11px;
+  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.file-chip-rm {
+  background: none; border: 0; color: var(--text-faint);
+  cursor: pointer; font-size: 11px; padding: 2px 4px;
+}
+.file-chip-rm:hover { color: var(--rose); }
 #new-ticket-body {
   flex: 1; resize: vertical; min-height: 58px;
   background: var(--bg-raise); color: var(--text);
@@ -174,6 +194,7 @@ input[type=number] { width: 64px; }
 .chip.convo { color: var(--accent); border-color: var(--accent-dim); }
 .chip.pr { color: var(--amber); border-color: #5c4a2e; }
 .chip.entries { color: var(--violet); border-color: #43356b; }
+.chip.attachments { color: var(--amber); border-color: #5c4a2e; }
 .chip.verified { color: var(--accent); border-color: var(--accent-dim); }
 .verify-btn {
   display: block; width: 100%; margin-top: 10px;
@@ -216,6 +237,26 @@ input[type=number] { width: 64px; }
   font-family: var(--mono); font-size: 12px; color: var(--amber);
   border: 1px dashed #5c4a2e; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px;
 }
+.drawer-attachments {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  margin-bottom: 8px;
+}
+.att { text-decoration: none; }
+.att-thumb {
+  display: inline-block; border: 1px solid var(--line); border-radius: 8px;
+  overflow: hidden; line-height: 0; transition: border-color .12s;
+}
+.att-thumb:hover { border-color: var(--accent-dim); }
+.att-thumb img { width: 84px; height: 84px; object-fit: cover; display: block; }
+.att-file {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+  border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.att-file:hover { color: var(--accent); border-color: var(--accent-dim); }
+.att-size { color: var(--text-faint); font-size: 11px; }
+#append-form .attach-btn { border-radius: 10px; }
 .drawer-thread { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 8px 2px; }
 .entry { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--bg-card); }
 .entry-head { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-bottom: 6px; }

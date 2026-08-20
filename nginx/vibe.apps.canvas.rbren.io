@@ -13,6 +13,9 @@ server {
         auth_basic "Restricted";
         auth_basic_user_file /etc/nginx/.htpasswd;
 
+        # Ticket attachment uploads (backend enforces 25 MB).
+        client_max_body_size 26m;
+
         proxy_pass http://127.0.0.1:18300;
         proxy_http_version 1.1;
         proxy_set_header Host $host;

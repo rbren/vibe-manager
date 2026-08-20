@@ -53,9 +53,14 @@
 
   <section id="board-wrap" hidden>
     <form id="new-ticket-form" autocomplete="off">
-      <textarea id="new-ticket-body" rows="2"
-        placeholder="Describe what you want built… (⏎ to submit, ⌘⏎ for newline)"></textarea>
-      <button type="submit" id="new-ticket-submit">submit&nbsp;ticket&nbsp;→</button>
+      <div class="ticket-form-row">
+        <textarea id="new-ticket-body" rows="2"
+          placeholder="Describe what you want built… (⏎ to submit, ⌘⏎ for newline)"></textarea>
+        <input type="file" id="new-ticket-file-input" multiple hidden>
+        <button type="button" id="new-ticket-attach" class="attach-btn" title="attach files or images">📎</button>
+        <button type="submit" id="new-ticket-submit">submit&nbsp;ticket&nbsp;→</button>
+      </div>
+      <div id="new-ticket-files" class="file-chips" hidden></div>
     </form>
 
     <div class="board" id="board">
@@ -95,9 +100,12 @@
     </div>
     <div class="drawer-links" id="drawer-links"></div>
     <div class="drawer-note" id="drawer-note" hidden></div>
+    <div class="drawer-attachments" id="drawer-attachments" hidden></div>
     <div class="drawer-thread" id="drawer-thread"></div>
     <form id="append-form">
       <textarea id="append-body" rows="3" placeholder="Add another request… (append only)"></textarea>
+      <input type="file" id="drawer-file-input" multiple hidden>
+      <button type="button" id="drawer-attach" class="attach-btn" title="attach files or images">📎</button>
       <button type="submit">append&nbsp;→</button>
     </form>
   </div>
