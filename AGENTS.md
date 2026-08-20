@@ -32,6 +32,11 @@ via /etc/nginx/.htpasswd).
 - `static/` — vanilla JS SPA (no build step). Kanban columns: pending,
   in_progress, needs_input, finished. Drag vertically to reprioritize; click
   a card for the append-only drawer; each card links to its conversation.
+  Finished cards have a "mark verified" button (`POST
+  /api/tickets/<id>/verify` sets status=verified + verified_at); verified
+  tickets leave the board and appear in a fifth column (most recently
+  verified first) toggled by the top-bar "show verified" button. The
+  automation ignores verified tickets entirely (terminal state).
 
 ## Key facts / gotchas
 

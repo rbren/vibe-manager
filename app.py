@@ -39,6 +39,8 @@ SESSION_KEY = (ROOT / ".session-key").read_text().strip()
 AUTOMATION_KEY = (ROOT / ".automation-key").read_text().strip()
 
 STATUSES = ["pending", "in_progress", "needs_input", "finished"]
+# Terminal state outside the main board; reached only via the verify endpoint.
+VERIFIED = "verified"
 
 app = FastAPI(title="Vibe Work Manager")
 
@@ -97,6 +99,9 @@ def init_db() -> None:
             );
             """
         )
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(tickets)")}
+        if "verified_at" not in cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN verified_at REAL")
 
 
 init_db()
@@ -320,6 +325,24 @@ def append_entry(ticket_id: str, req: NewEntry):
             (uuid.uuid4().hex[:12], ticket_id, req.author, body, now),
         )
         conn.execute("UPDATE tickets SET updated_at=? WHERE id=?", (now, ticket_id))
+        conn.commit()
+        return ticket_dict(conn, conn.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone())
+
+
+@app.post("/api/tickets/{ticket_id}/verify")
+def verify_ticket(ticket_id: str):
+    """User marks a finished ticket as verified — it leaves the main board."""
+    now = time.time()
+    with db() as conn:
+        row = conn.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "ticket not found")
+        if row["status"] != "finished":
+            raise HTTPException(400, "only finished tickets can be verified")
+        conn.execute(
+            "UPDATE tickets SET status=?, verified_at=?, updated_at=? WHERE id=?",
+            (VERIFIED, now, now, ticket_id),
+        )
         conn.commit()
         return ticket_dict(conn, conn.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone())
 

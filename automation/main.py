@@ -182,6 +182,8 @@ def gather() -> tuple[dict, list[dict]]:
     gh_token = None
     tickets = []
     for t in board["tickets"]:
+        if t["status"] == "verified":  # terminal; user signed off — nothing to poll or manage
+            continue
         conv_status = conversation_status(t["conversation_id"]) if t.get("conversation_id") else None
         prs = None
         if t.get("pr_url") and t["status"] != "finished":

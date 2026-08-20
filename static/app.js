@@ -11,6 +11,7 @@ const state = {
   drawerTicketId: null,
   pollTimer: null,
   dragging: null,        // { id, status }
+  showVerified: localStorage.getItem("vibe.showVerified") === "1",
 };
 
 const STATUS_LABEL = {
@@ -18,6 +19,7 @@ const STATUS_LABEL = {
   in_progress: "in progress",
   needs_input: "needs input",
   finished: "finished",
+  verified: "verified",
 };
 
 /* ------------------------------------------------------------------ api */
@@ -136,6 +138,7 @@ function render() {
   $("#board-wrap").hidden = !has;
   $("#ctl-concurrency").hidden = !has;
   $("#ctl-pushmode").hidden = !has;
+  $("#show-verified").hidden = !has;
   $("#mgr-badge").hidden = !(has && state.ws.automation_id);
   if (has) { renderBoard(); renderSettings(); }
 }
@@ -154,12 +157,20 @@ function cardEl(t) {
   const el = document.createElement("div");
   el.className = "card";
   el.dataset.id = t.id;
-  el.draggable = true;
+  el.draggable = t.status !== "verified";
 
   const body = document.createElement("div");
   body.className = "card-body";
   body.textContent = firstEntry;
   el.appendChild(body);
+
+  if (t.status === "finished") {
+    const btn = document.createElement("button");
+    btn.className = "verify-btn";
+    btn.textContent = "✓ mark verified";
+    btn.addEventListener("click", (e) => { e.stopPropagation(); verifyTicket(t.id); });
+    el.appendChild(btn);
+  }
 
   if (t.manager_note) {
     const note = document.createElement("div");
@@ -171,6 +182,12 @@ function cardEl(t) {
   const meta = document.createElement("div");
   meta.className = "card-meta";
   meta.innerHTML = `<span>#${t.id.slice(0, 6)}</span>`;
+  if (t.status === "verified" && t.verified_at) {
+    const when = document.createElement("span");
+    when.className = "chip verified";
+    when.textContent = `✓ ${fmtTime(t.verified_at)}`;
+    meta.appendChild(when);
+  }
   if (t.entries.length > 1) {
     const chip = document.createElement("span");
     chip.className = "chip entries";
@@ -199,10 +216,12 @@ function cardEl(t) {
   }
   el.appendChild(meta);
 
-  const handle = document.createElement("span");
-  handle.className = "drag-handle";
-  handle.textContent = "⋮⋮";
-  el.appendChild(handle);
+  if (t.status !== "verified") {
+    const handle = document.createElement("span");
+    handle.className = "drag-handle";
+    handle.textContent = "⋮⋮";
+    el.appendChild(handle);
+  }
 
   el.addEventListener("click", () => openDrawer(t.id));
   el.addEventListener("dragstart", (e) => {
@@ -237,12 +256,17 @@ function cardEl(t) {
 }
 
 function renderBoard() {
+  $(`.col[data-status="verified"]`).hidden = !state.showVerified;
+  $("#board").classList.toggle("show-verified", state.showVerified);
   for (const status of Object.keys(STATUS_LABEL)) {
     const container = $(`.col-cards[data-status="${status}"]`);
     container.innerHTML = "";
     const tickets = state.tickets
       .filter((t) => t.status === status)
-      .sort((a, b) => a.sort_order - b.sort_order || a.created_at - b.created_at);
+      .sort((a, b) =>
+        status === "verified"
+          ? (b.verified_at ?? b.updated_at) - (a.verified_at ?? a.updated_at)
+          : a.sort_order - b.sort_order || a.created_at - b.created_at);
     for (const t of tickets) container.appendChild(cardEl(t));
     $(`.col[data-status="${status}"] .col-count`).textContent = tickets.length || "";
   }
@@ -294,6 +318,29 @@ async function submitTicket() {
   } finally {
     btn.disabled = false;
   }
+}
+
+async function verifyTicket(id) {
+  try {
+    await api(`/api/tickets/${id}/verify`, { method: "POST" });
+    toast("ticket verified ✓");
+    await refreshBoard();
+  } catch (e) {
+    toast(`verify failed: ${e.message}`, true);
+  }
+}
+
+function toggleVerified() {
+  state.showVerified = !state.showVerified;
+  localStorage.setItem("vibe.showVerified", state.showVerified ? "1" : "0");
+  renderVerifiedToggle();
+  renderBoard();
+}
+
+function renderVerifiedToggle() {
+  const btn = $("#show-verified");
+  btn.textContent = state.showVerified ? "✓ hide verified" : "✓ show verified";
+  btn.classList.toggle("active", state.showVerified);
 }
 
 /* ---------------------------------------------------------------- drawer */
@@ -421,6 +468,9 @@ function wire() {
   });
   $$("#push-mode .seg-btn").forEach((b) =>
     b.addEventListener("click", () => patchWorkspace({ push_mode: b.dataset.mode })));
+
+  $("#show-verified").addEventListener("click", toggleVerified);
+  renderVerifiedToggle();
 }
 
 async function init() {
