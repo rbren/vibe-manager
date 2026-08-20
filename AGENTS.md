@@ -189,24 +189,29 @@ via /etc/nginx/.htpasswd).
   `workspaces.manager_conversation_id`; the cron bails out if that
   conversation is still running (tag-verified), so overlapping managers can't
   happen even if the automation KV state is lost.
-- **How canvas workspace grouping actually works** (investigated 2026-05):
-  the installed @openhands/agent-canvas 1.14.0 sidebar groups by each
-  conversation's `selected_workspace`, which that build resolves from
-  localStorage metadata ONLY (written when a human launches from the UI) ŌåÆ
-  server-created conversations render under "No workspace" in 1.14.0 no
-  matter what the server sends. Newer agent-canvas builds group by the
-  conversation's `workspace.working_dir` field, which app.py sets on every
-  conversation ŌĆö so grouping fixes itself on the next canvas upgrade.
+- **How canvas workspace grouping actually works** (verified 2026-05-21
+  against openhands/openhands main 550fc28a4 — the canvas UI source; the
+  agent-canvas repo is archived): the sidebar groups by
+  `selected_workspace`, resolved in `toAppConversation`
+  (src/api/agent-server-adapter.ts) from **localStorage metadata ONLY**
+  (written by `setStoredConversationMetadata` when a human launches from
+  the workspace picker). `workspaceGroup()` in
+  conversation-panel-list-helpers.ts deliberately does NOT use
+  `workspace.working_dir` (worktree paths would fragment groups). So NO
+  version — 1.14.0 installed here IS current — groups API-created
+  conversations under a workspace; they always render as "No workspace".
+  This is an upstream gap; the fix belongs in openhands/openhands (e.g.
+  fall back to `tags.workspace` in toAppConversation), NOT here.
   **Do NOT patch the canvas install**: local edits to the minified bundles
   were attempted twice (tags fallback in
   `agent-server-conversation-service.api-*.js`, then an import-map
   cache-bust in index.html + an nginx alias) and the user rejected live-app
   modification both times; everything was reverted 2026-05-21 (bundle,
   index.html, nginx canvas.rbren.io, /var/www/canvas-patches all pristine).
-  Keep the fix entirely server-side: conversations carry `tags.workspace`
-  and `workspace.working_dir`; the UI catches up when upgraded. Also note
-  canvas assets are served `Cache-Control: immutable, max-age=1y`, so any
-  in-place asset edit would be invisible to browsers anyway.
+  Keep vibe-manager's side server-side only: conversations carry
+  `tags.workspace` and `workspace.working_dir` (already correct for both
+  managers). Also note canvas assets are served `Cache-Control: immutable,
+  max-age=1y`, so any in-place asset edit is invisible to browsers anyway.
   `PATCH /api/conversations/<id> {"tags": {...}}` REPLACES all tags ŌĆö always
   merge with the existing ones. `scripts/backfill_workspace_tags.py`
   (stdlib-only, idempotent, run from the repo root) retro-tags every
