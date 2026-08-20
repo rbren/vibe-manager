@@ -145,13 +145,43 @@ def get_secret(name: str) -> str:
         return ""
 
 
-def conversation_status(conv_id: str) -> str:
+def conversation_info(conv_id: str) -> tuple[str, dict]:
+    """Return (execution_status, tags) for a conversation."""
     try:
-        return agent(f"/api/conversations/{conv_id}?include_skills=false").get("execution_status", "unknown")
+        d = agent(f"/api/conversations/{conv_id}?include_skills=false")
+        return d.get("execution_status", "unknown"), d.get("tags") or {}
     except urllib.error.HTTPError as exc:
-        return "deleted" if exc.code == 404 else f"error_{exc.code}"
+        return ("deleted" if exc.code == 404 else f"error_{exc.code}"), {}
     except Exception:  # noqa: BLE001
-        return "unreachable"
+        return "unreachable", {}
+
+
+def conversation_status(conv_id: str) -> str:
+    return conversation_info(conv_id)[0]
+
+
+def find_running_manager(state: dict, ws: dict) -> str | None:
+    """Return the id of a still-running manager conversation for this workspace.
+
+    Checks the KV-tracked id first, then the id recorded on the workspace row
+    (survives KV state loss). Tags verify it really is this workspace's manager.
+    """
+    candidates = []
+    if state.get("manager_conversation_id"):
+        candidates.append(state["manager_conversation_id"])
+    row_conv = ws.get("manager_conversation_id")
+    if row_conv and row_conv not in candidates:
+        candidates.append(row_conv)
+    for conv_id in candidates:
+        status, tags = conversation_info(conv_id)
+        if status != "running":
+            continue
+        # The KV-tracked id is trusted; a row-recorded id must carry our tags.
+        if conv_id == state.get("manager_conversation_id") or (
+            tags.get("viberole") == "manager" and tags.get("workspace") == WORKSPACE_PATH
+        ):
+            return conv_id
+    return None
 
 
 _PR_RE = re.compile(r"github\.com/([^/]+)/([^/]+)/pull/(\d+)")
@@ -175,9 +205,12 @@ def pr_state(pr_url: str, token: str) -> str:
         return "unknown"
 
 
-def gather() -> tuple[dict, list[dict]]:
+def snapshot() -> dict:
+    return vibe(f"/api/manager/workspaces/{WORKSPACE_ID}/snapshot")
+
+
+def enrich(board: dict) -> tuple[dict, list[dict]]:
     """Return (workspace, enriched tickets)."""
-    board = vibe(f"/api/manager/workspaces/{WORKSPACE_ID}/snapshot")
     ws = board["workspace"]
     gh_token = None
     tickets = []
@@ -363,6 +396,7 @@ def start_manager_conversation(prompt: str) -> str:
             "worktree": False,  # the manager only reads/updates AGENTS.md; workers get worktrees
             "title": f"🧠 Vibe Manager — {WORKSPACE_NAME} {time.strftime('%m-%d %H:%M')}",
             "max_iterations": 200,
+            "role": "manager",
         },
         timeout=150,
     )
@@ -373,21 +407,26 @@ def start_manager_conversation(prompt: str) -> str:
 
 def main() -> None:
     state = load_state()
+    board = snapshot()
 
-    # If a previous manager conversation is still working, skip this cycle.
-    prev_conv = state.get("manager_conversation_id")
-    if prev_conv:
-        status = conversation_status(prev_conv)
+    # If a manager conversation is already running for this workspace, bail
+    # out. Checks both the KV-tracked id and the workspace-row id (tag-verified),
+    # so a lost KV state can't cause overlapping managers.
+    running_mgr = find_running_manager(state, board["workspace"])
+    if running_mgr:
         started = state.get("manager_started_at") or 0
-        if status == "running" and time.time() - started < MANAGER_STALE_SECONDS:
-            print(f"manager conversation {prev_conv} still running — skipping")
+        if time.time() - started < MANAGER_STALE_SECONDS:
+            print(f"manager conversation {running_mgr} still running — skipping")
             fire_callback()
             return
-        print(f"previous manager conversation {prev_conv} ended ({status})")
-        state["manager_conversation_id"] = None
+        print(f"manager conversation {running_mgr} exceeded stale limit — proceeding")
+    prev_conv = state.get("manager_conversation_id")
+    if prev_conv and prev_conv != running_mgr:
+        print(f"previous manager conversation {prev_conv} ended")
         state["last_manager_finished_at"] = time.time()
+    state["manager_conversation_id"] = None
 
-    ws, tickets = gather()
+    ws, tickets = enrich(board)
     apply_mechanical_transitions(tickets)
     fp = fingerprint(ws, tickets)
     signals, retry_safe = compute_signals(ws, tickets)

@@ -97,6 +97,9 @@ def init_db() -> None:
             );
             """
         )
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(workspaces)")}
+        if "manager_conversation_id" not in cols:
+            conn.execute("ALTER TABLE workspaces ADD COLUMN manager_conversation_id TEXT")
 
 
 init_db()
@@ -155,6 +158,8 @@ class StartConversation(BaseModel):
     conversation_id: str | None = None  # when set, send follow-up instead of starting new
     title: str | None = None
     max_iterations: int = 500
+    role: str = "worker"  # worker | manager — recorded in conversation tags
+    tags: dict[str, str] | None = None
 
 
 # ------------------------------------------------------------------ serializers
@@ -396,6 +401,13 @@ def manager_start_conversation(req: StartConversation):
             r.raise_for_status()
             return {"id": req.conversation_id, "followup": True,
                     "conversation_url": f"{CANVAS_BASE}/conversations/{req.conversation_id}"}
+        # `workspace` tag = the project path (not the worktree path) so the
+        # canvas UI groups the conversation under the right workspace.
+        tags = {
+            "workspace": req.working_dir,
+            "viberole": req.role,
+            **(req.tags or {}),
+        }
         body = {
             "workspace": {"kind": "LocalWorkspace", "working_dir": req.working_dir},
             "worktree": req.worktree,
@@ -404,10 +416,17 @@ def manager_start_conversation(req: StartConversation):
             "initial_message": message,
             "max_iterations": req.max_iterations,
             "autotitle": not req.title,
+            "tags": tags,
         }
         r = client.post(f"{AGENT_SERVER}/api/conversations", headers=headers, json=body)
         r.raise_for_status()
         conv_id = r.json()["id"]
+        if req.role == "manager":
+            with db() as conn:
+                conn.execute(
+                    "UPDATE workspaces SET manager_conversation_id=? WHERE path=?",
+                    (conv_id, req.working_dir),
+                )
         if req.title:
             client.patch(
                 f"{AGENT_SERVER}/api/conversations/{conv_id}",
