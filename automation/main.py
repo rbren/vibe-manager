@@ -46,6 +46,7 @@ _STATE_KEY = "state"
 
 MANAGER_STALE_SECONDS = 45 * 60  # give up on a manager conversation after this
 RETRY_INTERVAL_SECONDS = 10 * 60  # re-kick manager if signals persist without board change
+MAX_RETRY_ATTEMPTS = 3  # cap crash-recovery retries per unchanged board state
 TERMINAL_CONV_STATUSES = {"finished", "idle", "error", "stuck", "deleted", "paused"}
 
 
@@ -245,6 +246,19 @@ def enrich(board: dict) -> tuple[dict, list[dict]]:
     return ws, tickets
 
 
+def has_undispatched_entries(t: dict) -> bool:
+    """True if a non-manager entry lies beyond dispatched_entry_count.
+
+    dispatched_entry_count is an index into the full entry thread; only
+    user/agent-authored entries past it count as awaiting dispatch. The
+    manager's own append_entry comments live in the same thread and must be
+    ignored here, or each status comment re-summons the manager forever
+    (the 2026-08-21 overnight loop: 50 no-op manager runs).
+    """
+    dispatched = t.get("dispatched_entry_count", 0)
+    return any(e.get("author") != "manager" for e in t["entries"][dispatched:])
+
+
 def apply_mechanical_transitions(tickets: list[dict]) -> None:
     """PR open -> needs_input, PR merged -> finished. Deterministic, no LLM."""
     for t in tickets:
@@ -259,7 +273,7 @@ def apply_mechanical_transitions(tickets: list[dict]) -> None:
             # Only park the card once the worker is done pushing commits, and
             # not while a new user entry awaits dispatch (the app reopens such
             # tickets to pending; don't fight it before the manager relays it).
-            undispatched = len(t["entries"]) > t.get("dispatched_entry_count", 0)
+            undispatched = has_undispatched_entries(t)
             if not undispatched and (
                 (t.get("conv_status") or "") in TERMINAL_CONV_STATUSES or not t.get("conversation_id")
             ):
@@ -301,7 +315,7 @@ def compute_signals(ws: dict, tickets: list[dict]) -> tuple[list[str], list[str]
         if t.get("conversation_id") and t.get("conv_status") == "running"
     )
     for t in tickets:
-        undispatched = len(t["entries"]) > t.get("dispatched_entry_count", 0)
+        undispatched = has_undispatched_entries(t)
         if undispatched:
             sig = f"new-entries:{t['id']}"
             signals.append(sig)
@@ -336,6 +350,27 @@ def compute_signals(ws: dict, tickets: list[dict]) -> tuple[list[str], list[str]
             signals.append(sig)
             retry_safe.append(sig)
     return signals, retry_safe
+
+
+def kickoff_decision(state: dict, changed: bool, signals: list[str],
+                     retry_safe: list[str]) -> tuple[bool, int]:
+    """Return (kick_manager, retry_count) for this cycle.
+
+    Normal path: kick when the board changed AND something is actionable.
+    Safety net: if retry-safe signals persist without a board change (e.g. a
+    previous manager run crashed before acting), retry on a slow cadence —
+    but capped at MAX_RETRY_ATTEMPTS per unchanged fingerprint. Without the
+    cap, a manager that completed but deliberately declined to act would be
+    re-summoned every RETRY_INTERVAL forever (the 2026-08-21 overnight loop:
+    50 no-op manager runs). The count resets whenever the fingerprint changes.
+    """
+    retry_count = 0 if changed else state.get("retry_count", 0)
+    stale_retry = (
+        bool(retry_safe)
+        and retry_count < MAX_RETRY_ATTEMPTS
+        and time.time() - (state.get("manager_started_at") or 0) > RETRY_INTERVAL_SECONDS
+    )
+    return bool(signals and changed) or stale_retry, retry_count
 
 
 def conv_statuses(tickets: list[dict]) -> dict[str, str]:
@@ -462,6 +497,7 @@ Agent server API (read-only inspection): base `{AGENT_SERVER}`, header `X-Sessio
 2. For every ticket whose worker conversation just ended (conversation_status finished/idle but ticket still in_progress): read its final response. If it opened a PR, PATCH pr_url + status needs_input. In push-to-main mode verify the push landed on main and mark finished. If the worker failed or stalled (error/stuck), decide: send a corrective follow-up message, or mark needs_input with a concise append_entry asking the user for guidance.
    - Conversely, if a ticket's conversation_status is **running** but the ticket is needs_input/finished/pending, the user likely resumed the agent manually (sent it a message directly). Set the ticket status back to in_progress (and clear a stale manager_note) so the board reflects that the agent is working again.
 3. For tickets with NEW user entries beyond dispatched_entry_count:
+   - Only user/agent-authored entries count as new requests. If the entries beyond dispatched_entry_count are all manager comments (yours), there is nothing to relay — bump dispatched_entry_count to the current entry count so the board reads as fully dispatched, and move on.
    - If the ticket already has a conversation, prefer **reusing it**: send the new request as a follow-up message to that conversation, bump dispatched_entry_count to the current entry count, and ensure status is in_progress.
    - A finished/needs_input ticket that receives a new user entry is automatically moved back to pending by the app; it moves to in_progress once you dispatch the follow-up.
 4. For pending tickets with no conversation: dispatch workers, **highest priority first** (lower priority_rank = higher priority; the user orders cards within columns).
@@ -527,14 +563,13 @@ def main() -> None:
     state["conv_statuses"] = conv_statuses(tickets)
 
     changed = fp != state.get("fingerprint")
-    # Safety net: if retry-safe signals persist but nothing changed (e.g. a
-    # previous manager run crashed before acting), retry on a slow cadence.
-    stale_retry = bool(retry_safe) and (
-        time.time() - (state.get("manager_started_at") or 0) > RETRY_INTERVAL_SECONDS
+    kick, retry_count = kickoff_decision(state, changed, signals, retry_safe)
+    print(
+        f"fingerprint changed: {changed}; signals: {signals or 'none'}; "
+        f"kick: {kick} (retries used: {retry_count}/{MAX_RETRY_ATTEMPTS})"
     )
-    print(f"fingerprint changed: {changed}; signals: {signals or 'none'}; stale_retry: {stale_retry}")
 
-    if (signals and changed) or stale_retry:
+    if kick:
         prompt = build_manager_prompt(ws, tickets)
         conv_id = start_manager_conversation(prompt)
         print(f"manager kicked off: {CANVAS_BASE}/conversations/{conv_id}")
@@ -542,9 +577,11 @@ def main() -> None:
             "manager_conversation_id": conv_id,
             "manager_started_at": time.time(),
             "fingerprint": fp,
+            "retry_count": retry_count + (0 if changed else 1),
         })
     else:
         state["fingerprint"] = fp
+        state["retry_count"] = retry_count
 
     state["last_checked_at"] = time.time()
     save_state(state)

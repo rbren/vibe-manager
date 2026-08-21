@@ -47,6 +47,20 @@ via /etc/nginx/.htpasswd).
   - Deferral contract: if the Manager deliberately does NOT dispatch a pending
     ticket it must set `manager_note`, which suppresses the dispatchable
     signal until the board changes.
+  - **Re-invocation loop guards** (regression fix for the 2026-08-21
+    overnight loop Ñ 50 no-op manager runs on the openhands workspace, one
+    every ~10 min): (1) `has_undispatched_entries` only counts non-manager
+    entries beyond `dispatched_entry_count`, so the manager's own
+    `append_entry` status comments can't raise a `new-entries` signal;
+    (2) the stale-retry safety net is capped at `MAX_RETRY_ATTEMPTS` (3)
+    kickoffs per unchanged fingerprint (`retry_count` in KV state, reset on
+    any board change); (3) app.py's manager PATCH auto-absorbs trailing
+    manager-authored entries into `dispatched_entry_count` after an
+    `append_entry` (never advancing past a user/agent entry); (4) the manager
+    prompt tells the manager to bump the count itself when the only
+    "new" entries are its own comments. Tests:
+    `python tests/test_manager_loop_guard.py` (pure stdlib) and
+    `.venv/bin/python tests/test_dispatched_count_absorbs_manager_notes.py`.
 - **Ticket attachments**: users can attach files/images to tickets (paperclip
   button on the new-ticket form and in the drawer's append form; drawer shows
   image thumbnails + file chips, cards show a count chip). `attachments`

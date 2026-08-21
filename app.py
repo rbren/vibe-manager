@@ -1069,6 +1069,26 @@ def manager_patch_ticket(ticket_id: str, req: ManagerPatch):
                 "INSERT INTO entries(id, ticket_id, author, body, created_at) VALUES(?,?,?,?,?)",
                 (uuid.uuid4().hex[:12], ticket_id, "manager", req.append_entry.strip(), now),
             )
+            # Absorb trailing manager comments into dispatched_entry_count so
+            # the manager's own notes never read as "undispatched entries" and
+            # re-summon it (never advances past a user/agent entry).
+            authors = [
+                r["author"] for r in conn.execute(
+                    "SELECT author FROM entries WHERE ticket_id=? ORDER BY created_at",
+                    (ticket_id,),
+                )
+            ]
+            dispatched = conn.execute(
+                "SELECT dispatched_entry_count FROM tickets WHERE id=?", (ticket_id,)
+            ).fetchone()[0]
+            advanced = dispatched
+            while advanced < len(authors) and authors[advanced] == "manager":
+                advanced += 1
+            if advanced != dispatched:
+                conn.execute(
+                    "UPDATE tickets SET dispatched_entry_count=?, updated_at=? WHERE id=?",
+                    (advanced, now, ticket_id),
+                )
         conn.commit()
         return ticket_dict(conn, conn.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone())
 
