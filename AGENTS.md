@@ -312,3 +312,7 @@ via /etc/nginx/.htpasswd).
   frontend tickets almost always collide there ŌĆö the Manager serializes app.js-
   heavy tickets and tells concurrent workers to fetch+rebase onto latest master
   before landing.
+
+- Text sizing (cf7840e, 2026-05): `static/style.css` sets `html { font-size:
+  120%; }` and all font-sizes are in `rem` (base 16px). Change the root
+  percentage to rescale all text; keep new font-size declarations in rem.
