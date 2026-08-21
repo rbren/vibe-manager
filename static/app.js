@@ -95,18 +95,6 @@ function attachmentEl(a) {
   return link;
 }
 
-/* ---------------------------------------------------------------- toast */
-
-let toastTimer;
-function toast(msg, isErr = false) {
-  const el = $("#toast");
-  el.textContent = msg;
-  el.classList.toggle("err", isErr);
-  el.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (el.hidden = true), 3500);
-}
-
 /* ----------------------------------------------------------- workspaces */
 
 async function loadWorkspaces() {
@@ -182,14 +170,12 @@ async function selectWorkspace(path, { historyMode = "push" } = {}) {
     state.automation = null;
     localStorage.setItem("vibe.workspace", path);
     syncURL(historyMode);
-    if (ws.automation_id) toast("manager automation active ✓");
-    else toast("workspace selected — manager automation could not be created", true);
     await refreshBoard();
     startPolling();
     await loadWorkspaces();
     $("#workspace-select").value = path;
   } catch (e) {
-    toast(`workspace error: ${e.message}`, true);
+    console.error(`workspace error: ${e.message}`);
   }
   render();
 }
@@ -249,9 +235,8 @@ async function triggerManager() {
   $("#mgr-text").textContent = "manager: triggering…";
   try {
     await api(`/api/workspaces/${state.ws.id}/automation/trigger`, { method: "POST" });
-    toast("manager run triggered ▶");
   } catch (e) {
-    toast(`manager trigger failed: ${e.message}`, true);
+    console.error(`manager trigger failed: ${e.message}`);
   }
   badge.classList.remove("triggering");
   refreshAutomation();
@@ -503,7 +488,7 @@ async function reorderWithin(status, draggedId, targetId, above) {
       body: JSON.stringify({ status, ordered_ids: ordered }),
     });
   } catch (e) {
-    toast(`reorder failed: ${e.message}`, true);
+    console.error(`reorder failed: ${e.message}`);
     refreshBoard();
   }
 }
@@ -529,11 +514,10 @@ async function submitTicket() {
       try { await uploadAttachment(ticket.id, f); }
       catch (e) { failed.push(e.message); }
     }
-    if (failed.length) toast(`ticket submitted, but upload failed: ${failed.join("; ")}`, true);
-    else toast("ticket submitted — manager will pick it up");
+    if (failed.length) console.error(`ticket submitted, but upload failed: ${failed.join("; ")}`);
     await refreshBoard();
   } catch (e) {
-    toast(`submit failed: ${e.message}`, true);
+    console.error(`submit failed: ${e.message}`);
   } finally {
     btn.disabled = false;
   }
@@ -568,18 +552,16 @@ async function uploadDrawerFiles(files) {
     try { await uploadAttachment(state.drawerTicketId, f); }
     catch (e) { failed.push(e.message); }
   }
-  if (failed.length) toast(`upload failed: ${failed.join("; ")}`, true);
-  else toast(`${files.length} attachment${files.length > 1 ? "s" : ""} added`);
+  if (failed.length) console.error(`upload failed: ${failed.join("; ")}`);
   await refreshBoard();
 }
 
 async function verifyTicket(id) {
   try {
     await api(`/api/tickets/${id}/verify`, { method: "POST" });
-    toast("ticket verified ✓");
     await refreshBoard();
   } catch (e) {
-    toast(`verify failed: ${e.message}`, true);
+    console.error(`verify failed: ${e.message}`);
   }
 }
 
@@ -695,10 +677,9 @@ async function appendEntry() {
       body: JSON.stringify({ body }),
     });
     ta.value = "";
-    toast("request appended");
     await refreshBoard();
   } catch (e) {
-    toast(`append failed: ${e.message}`, true);
+    console.error(`append failed: ${e.message}`);
   }
 }
 
@@ -712,9 +693,8 @@ async function patchWorkspace(patch) {
       body: JSON.stringify(patch),
     });
     renderSettings();
-    toast("settings saved");
   } catch (e) {
-    toast(`settings failed: ${e.message}`, true);
+    console.error(`settings failed: ${e.message}`);
   }
 }
 
@@ -812,7 +792,7 @@ async function init() {
     $("#workspace-select").value = target;
     await selectWorkspace(target, { historyMode: "replace" });
   } else {
-    if (urlName) toast(`unknown workspace: ${urlName}`, true);
+    if (urlName) console.error(`unknown workspace: ${urlName}`);
     history.replaceState({}, "", "/");
     render();
   }
