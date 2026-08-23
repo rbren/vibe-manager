@@ -255,15 +255,30 @@ function renderMgrBadge() {
     badge.title = `Manager automation active for this workspace\n${TRIGGER_HINT}`;
     return;
   }
-  const lr = a.last_run;
+  // Judge health by the last *finished* run so an in-flight retry (with a
+  // once-a-minute cron, one is almost always in flight while runs keep
+  // failing) can't mask a failure streak behind a neutral "polling" state.
+  const fin = a.last_finished_run;
+  const lr = fin || a.last_run;
   const lastWhen = lr ? fmtAgo(lr.completed_at || lr.started_at || lr.created_at) : "";
-  const convRunning = a.manager_conversation?.status === "running";
+  const runsFailing = !!(fin && fin.status !== "COMPLETED");
+  const convStatus = a.manager_conversation?.status;
+  const convRunning = convStatus === "running";
+  const convFailing = convStatus === "error" || convStatus === "stuck";
   const tip = [];
   let label, cls = "";
   if (a.error) {
     label = "manager: unknown"; cls = "err"; tip.push(a.error);
   } else if (a.enabled === false) {
     label = "manager: paused"; cls = "paused"; tip.push("Automation is disabled");
+  } else if (runsFailing) {
+    label = `manager ✗ ${lastWhen}`; cls = "err";
+    if (a.consecutive_failures > 1) tip.push(`${a.consecutive_failures} runs failed in a row`);
+    if (a.run_active) tip.push("retry run in progress");
+    if (convRunning) tip.push("manager agent conversation still running");
+  } else if (convFailing) {
+    label = `manager: agent ${convStatus}`; cls = "err";
+    tip.push(`Manager agent conversation is ${convStatus}`);
   } else if (convRunning) {
     label = "manager: working";
     tip.push("Manager agent conversation is running right now");
@@ -271,9 +286,8 @@ function renderMgrBadge() {
     label = "manager: polling";
     tip.push("Automation run in progress");
   } else if (lr) {
-    const failed = lr.status && lr.status !== "COMPLETED";
-    label = `manager ${failed ? "✗" : "✓"} ${lastWhen}`;
-    cls = failed ? "err" : "ok";
+    label = `manager ✓ ${lastWhen}`;
+    cls = "ok";
   } else {
     label = "manager";
   }

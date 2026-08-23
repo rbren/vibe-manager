@@ -46,8 +46,24 @@ class StubAutomation(BaseHTTPRequestHandler):
                         "started_at": "2026-05-21T18:59:10Z",
                         "completed_at": "2026-05-21T18:59:20Z",
                     },
+                    {
+                        "id": "run-0b",
+                        "status": "FAILED",
+                        "error_detail": "boom",
+                        "created_at": "2026-05-21T18:58:00Z",
+                        "started_at": "2026-05-21T18:58:10Z",
+                        "completed_at": "2026-05-21T18:58:20Z",
+                    },
+                    {
+                        "id": "run-0a",
+                        "status": "COMPLETED",
+                        "error_detail": None,
+                        "created_at": "2026-05-21T18:57:00Z",
+                        "started_at": "2026-05-21T18:57:10Z",
+                        "completed_at": "2026-05-21T18:57:20Z",
+                    },
                 ],
-                "total": 2,
+                "total": 4,
             }
         elif self.path == f"/api/automation/v1/{AUTOMATION_ID}":
             body = {
@@ -106,6 +122,7 @@ def test_unconfigured():
     d = r.json()
     assert d["configured"] is False and d["automation_id"] is None
     assert d["last_run"] is None and d["run_active"] is False
+    assert d["last_finished_run"] is None and d["consecutive_failures"] == 0
 
 
 def test_configured_with_runs():
@@ -118,6 +135,10 @@ def test_configured_with_runs():
     assert d["last_triggered_at"] == "2026-05-21T19:00:00Z"
     assert d["run_active"] is True  # run-2 has no completed_at
     assert d["last_run"]["status"] == "RUNNING"
+    # The in-flight retry must not mask the failure streak underneath it.
+    assert d["last_finished_run"]["status"] == "FAILED"
+    assert d["last_finished_run"]["error_detail"] == "boom"
+    assert d["consecutive_failures"] == 2  # run-1 + run-0b, stops at run-0a
     assert d["error"] is None
     assert d["manager_conversation"] is None  # no manager_conversation_id seeded
 

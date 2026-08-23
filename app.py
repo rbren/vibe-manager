@@ -578,11 +578,17 @@ def automation_status(ws_id: str):
         "last_triggered_at": None,
         "run_active": False,
         "last_run": None,
+        "last_finished_run": None,
+        "consecutive_failures": 0,
         "manager_conversation": None,
         "error": None,
     }
     if not automation_id:
         return out
+
+    def run_slim(run: dict) -> dict:
+        return {k: run.get(k) for k in ("status", "error_detail", "created_at", "started_at", "completed_at")}
+
     try:
         with httpx.Client(base_url=AUTOMATION_API, headers=_automation_headers(), timeout=10) as client:
             r = client.get(f"/v1/{automation_id}")
@@ -590,14 +596,21 @@ def automation_status(ws_id: str):
             auto = r.json()
             out["enabled"] = auto.get("enabled")
             out["last_triggered_at"] = auto.get("last_triggered_at")
-            runs = client.get(f"/v1/{automation_id}/runs", params={"limit": 5}).json().get("runs", [])
+            runs = client.get(f"/v1/{automation_id}/runs", params={"limit": 10}).json().get("runs", [])
             out["run_active"] = any(run.get("completed_at") is None for run in runs)
             if runs:
-                last = runs[0]
-                out["last_run"] = {
-                    k: last.get(k)
-                    for k in ("status", "error_detail", "created_at", "started_at", "completed_at")
-                }
+                out["last_run"] = run_slim(runs[0])
+            # A cron retry in flight must not mask failures: report the outcome
+            # of the most recent *finished* run + the current failure streak.
+            finished = [run for run in runs if run.get("completed_at") is not None]
+            if finished:
+                out["last_finished_run"] = run_slim(finished[0])
+                streak = 0
+                for run in finished:
+                    if run.get("status") == "COMPLETED":
+                        break
+                    streak += 1
+                out["consecutive_failures"] = streak
     except httpx.HTTPError as exc:
         out["error"] = f"automation backend unreachable: {exc}"
     conv_id = ws.get("manager_conversation_id")

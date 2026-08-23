@@ -48,7 +48,7 @@ via /etc/nginx/.htpasswd).
     ticket it must set `manager_note`, which suppresses the dispatchable
     signal until the board changes.
   - **Re-invocation loop guards** (regression fix for the 2026-08-21
-    overnight loop � 50 no-op manager runs on the openhands workspace, one
+    overnight loop — 50 no-op manager runs on the openhands workspace, one
     every ~10 min): (1) `has_undispatched_entries` only counts non-manager
     entries beyond `dispatched_entry_count`, so the manager's own
     `append_entry` status comments can't raise a `new-entries` signal;
@@ -137,18 +137,24 @@ via /etc/nginx/.htpasswd).
   `tests/test_conversation_model.py`.
 - **Manager automation status badge**: `GET /api/workspaces/<id>/automation`
   proxies the automation backend (GET `/v1/<automation_id>` +
-  `/v1/<automation_id>/runs?limit=5`) and returns {configured, enabled,
+  `/v1/<automation_id>/runs?limit=10`) and returns {configured, enabled,
   last_triggered_at, run_active (any run without completed_at), last_run
-  {status/error_detail/timestamps}, manager_conversation {id, status} from the
-  agent server via `workspaces.manager_conversation_id`, error}. Automation
-  backend failures degrade to `error` (still 200) so the UI can show
-  "unknown" instead of breaking. The SPA polls it every 15s and renders the
-  topbar `#mgr-badge` as: working (manager conversation running, pulsing) /
-  polling (automation run active) / Ō£ō|Ō£Ś + relative last-run time / paused
-  (disabled) / unknown (backend error); details in the badge tooltip. CSS
-  variants `.mgr-badge.ok|.err|.paused`. Tests:
+  {status/error_detail/timestamps}, last_finished_run (most recent run WITH
+  completed_at), consecutive_failures (streak of non-COMPLETED finished
+  runs), manager_conversation {id, status} from the agent server via
+  `workspaces.manager_conversation_id`, error}. Automation backend failures
+  degrade to `error` (still 200) so the UI can show "unknown" instead of
+  breaking. The SPA polls it every 15s and renders the topbar `#mgr-badge`.
+  Precedence (failures FIRST — health is judged by `last_finished_run`, NOT
+  `last_run`, because failing runs take ~70s each on a 1-min cron so a retry
+  is almost always in flight and would otherwise mask the red state behind
+  "polling"): unknown (backend error, red) / paused (disabled) / ✗ + time
+  (last finished run failed, red, failure streak in the tooltip) / agent
+  error|stuck (manager conversation execution_status, red) / working
+  (manager conversation running, pulsing) / polling (run active) / ✓ + time
+  (healthy). CSS variants `.mgr-badge.ok|.err|.paused`. Tests:
   `tests/test_automation_status.py` (stub automation backend on a local
-  port via VIBE_AUTOMATION_API; run with the service venv ŌĆö note tests
+  port via VIBE_AUTOMATION_API; run with the service venv — note tests
   import app.py, which needs `.session-key`/`.automation-key` in the repo
   root, so run them from the main checkout).
   - **Manual trigger**: clicking the badge (or Enter/Space, it's a
