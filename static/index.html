@@ -3,10 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vibe — work manager</title>
+<title>Vibe — agent dispatch board</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23131120'/%3E%3Crect x='7' y='8' width='4' height='16' rx='2' fill='%233FD8C8'/%3E%3Crect x='14' y='8' width='4' height='16' rx='2' fill='%23FFB454'/%3E%3Crect x='21' y='8' width='4' height='16' rx='2' fill='%23A794FF'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..700&family=Public+Sans:wght@400;500;600&family=Azeret+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/assets/style.css">
 <script>
   // Apply the saved theme before first paint to avoid a dark→light flash.
@@ -17,28 +18,33 @@
 <body>
 <header class="topbar">
   <div class="brand">
-    <span class="brand-glyph">▞▞</span>
-    <span class="brand-name">vibe</span>
+    <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+    <span class="brand-text">
+      <span class="brand-name">vibe</span>
+      <span class="brand-sub">agent dispatch</span>
+    </span>
   </div>
 
   <div class="topbar-controls">
-    <div class="control">
-      <select id="workspace-select" aria-label="workspace"><option value="">— pick a workspace —</option></select>
+    <div class="control control-workspace">
+      <label class="control-label" for="workspace-select">Workspace</label>
+      <select id="workspace-select"><option value="">Choose a workspace</option></select>
     </div>
     <div class="control" id="ctl-concurrency" hidden>
-      <label for="max-concurrent">concurrency</label>
+      <label class="control-label" for="max-concurrent">Agents at once</label>
       <input id="max-concurrent" type="number" min="1" max="20" value="3">
     </div>
     <div class="control" id="ctl-pushmode" hidden>
-      <div class="seg" id="push-mode" aria-label="changes">
-        <button data-mode="pr" class="seg-btn">pull request</button>
-        <button data-mode="main" class="seg-btn">push to main</button>
+      <span class="control-label" id="push-mode-label">Landing</span>
+      <div class="seg" id="push-mode" role="group" aria-labelledby="push-mode-label">
+        <button type="button" data-mode="pr" class="seg-btn">Pull request</button>
+        <button type="button" data-mode="main" class="seg-btn">Push to main</button>
       </div>
     </div>
-    <button id="show-verified" class="toggle-verified" hidden>✓ show verified</button>
-    <button id="theme-toggle" class="theme-toggle" title="switch to light mode" aria-label="toggle light/dark mode">☀ light</button>
+    <button id="show-verified" class="ghost-btn toggle-verified" hidden>Show verified</button>
+    <button id="theme-toggle" class="ghost-btn theme-toggle" title="Switch to light mode" aria-label="Switch colour theme">Light</button>
     <div class="mgr-badge" id="mgr-badge" hidden role="button" tabindex="0"
-         title="Manager automation active for this workspace&#10;click to run the manager now">
+         title="Manager automation is watching this workspace&#10;Click to run the manager now">
       <span class="pulse" id="mgr-dot"></span> <span id="mgr-text">manager</span>
     </div>
   </div>
@@ -47,61 +53,91 @@
 <main id="main">
   <section id="empty-state">
     <div class="empty-inner">
-      <div class="empty-glyph">▞▞</div>
-      <h1>Pick a workspace to start vibing</h1>
-      <p>Selecting a workspace spins up a <strong>Manager</strong> automation that watches
-         your ticket queue every minute, dispatches worker agents into git worktrees,
-         and moves cards across the board as work progresses.</p>
+      <div class="empty-lanes" aria-hidden="true">
+        <span class="lane-swatch" data-lane="pending"></span>
+        <span class="lane-swatch" data-lane="in_progress"></span>
+        <span class="lane-swatch" data-lane="needs_input"></span>
+        <span class="lane-swatch" data-lane="finished"></span>
+      </div>
+      <p class="eyebrow">No workspace open</p>
+      <h1>Choose a workspace to open its board.</h1>
+      <p class="empty-copy">Each workspace gets a manager that checks the queue every minute, hands
+         work to agents in their own git worktrees, and moves cards across the board as they go.</p>
     </div>
   </section>
 
   <section id="board-wrap" hidden>
-    <form id="new-ticket-form" autocomplete="off">
+    <form id="new-ticket-form" class="desk" autocomplete="off">
+      <div class="desk-head">
+        <span class="eyebrow">New request</span>
+        <span class="desk-hint">Enter sends · Shift + Enter adds a line</span>
+      </div>
       <div class="ticket-form-row">
-        <textarea id="new-ticket-body" rows="2"
-          placeholder="Describe what you want built… (⏎ to submit, ⇧⏎ for newline)"></textarea>
-        <input type="file" id="new-ticket-file-input" multiple hidden>
-        <button type="button" id="new-ticket-attach" class="attach-btn" title="attach files or images">📎</button>
-        <button type="submit" id="new-ticket-submit">submit&nbsp;ticket&nbsp;→</button>
+        <textarea id="new-ticket-body" rows="2" aria-label="What should the agents build?"
+          placeholder="What should the agents build?"></textarea>
+        <div class="desk-actions">
+          <input type="file" id="new-ticket-file-input" multiple hidden>
+          <button type="button" id="new-ticket-attach" class="attach-btn" title="Attach files or images" aria-label="Attach files or images">
+            <span aria-hidden="true">📎</span>
+          </button>
+          <button type="submit" id="new-ticket-submit">Send request</button>
+        </div>
       </div>
       <div id="new-ticket-files" class="file-chips" hidden></div>
     </form>
 
     <div class="board" id="board">
-      <div class="col" data-status="pending">
-        <div class="col-head"><span class="col-dot"></span> pending <span class="col-count"></span></div>
+      <section class="col" data-status="pending" aria-label="Pending">
+        <div class="col-head">
+          <span class="col-name">Pending</span>
+          <span class="col-count"></span>
+        </div>
         <div class="col-cards" data-status="pending"></div>
-      </div>
-      <div class="col" data-status="in_progress">
-        <div class="col-head"><span class="col-dot"></span> in progress <span class="col-count"></span></div>
+      </section>
+      <section class="col" data-status="in_progress" aria-label="In progress">
+        <div class="col-head">
+          <span class="col-name">In progress</span>
+          <span class="col-count"></span>
+        </div>
         <div class="col-cards" data-status="in_progress"></div>
-      </div>
-      <div class="col" data-status="needs_input">
-        <div class="col-head"><span class="col-dot"></span> needs input <span class="col-count"></span></div>
+      </section>
+      <section class="col" data-status="needs_input" aria-label="Needs you">
+        <div class="col-head">
+          <span class="col-name">Needs you</span>
+          <span class="col-count"></span>
+        </div>
         <div class="col-cards" data-status="needs_input"></div>
-      </div>
-      <div class="col" data-status="finished">
-        <div class="col-head"><span class="col-dot"></span> finished <span class="col-count"></span></div>
+      </section>
+      <section class="col" data-status="finished" aria-label="Finished">
+        <div class="col-head">
+          <span class="col-name">Finished</span>
+          <span class="col-count"></span>
+        </div>
         <div class="col-cards" data-status="finished"></div>
-      </div>
-      <div class="col" data-status="verified" hidden>
-        <div class="col-head"><span class="col-dot"></span> verified <span class="col-count"></span></div>
+      </section>
+      <section class="col" data-status="verified" aria-label="Verified" hidden>
+        <div class="col-head">
+          <span class="col-name">Verified</span>
+          <span class="col-count"></span>
+        </div>
         <div class="col-cards" data-status="verified"></div>
-      </div>
+      </section>
     </div>
   </section>
 </main>
 
 <aside id="drawer" hidden>
   <div class="drawer-backdrop" id="drawer-backdrop"></div>
-  <div class="drawer-panel">
+  <div class="drawer-panel" role="dialog" aria-modal="true" aria-label="Request detail">
     <div class="drawer-head">
-      <div>
-        <span class="drawer-status" id="drawer-status"></span>
-        <span class="drawer-id" id="drawer-id"></span>
-        <div class="drawer-title" id="drawer-title" hidden></div>
+      <div class="drawer-headings">
+        <div class="drawer-meta">
+          <span class="drawer-status" id="drawer-status"></span>
+          <span class="drawer-id" id="drawer-id"></span>
+        </div>
+        <h2 class="drawer-title" id="drawer-title" hidden></h2>
       </div>
-      <button class="drawer-close" id="drawer-close" aria-label="close">✕</button>
+      <button class="drawer-close" id="drawer-close" aria-label="Close">✕</button>
     </div>
     <div class="drawer-links" id="drawer-links"></div>
     <div class="drawer-note" id="drawer-note" hidden></div>
@@ -109,10 +145,15 @@
     <div class="drawer-attachments" id="drawer-attachments" hidden></div>
     <div class="drawer-thread" id="drawer-thread"></div>
     <form id="append-form">
-      <textarea id="append-body" rows="3" placeholder="Add another request… (append only)"></textarea>
-      <input type="file" id="drawer-file-input" multiple hidden>
-      <button type="button" id="drawer-attach" class="attach-btn" title="attach files or images">📎</button>
-      <button type="submit">append&nbsp;→</button>
+      <textarea id="append-body" rows="3" aria-label="Add to this request"
+        placeholder="Add to this request…"></textarea>
+      <div class="desk-actions">
+        <input type="file" id="drawer-file-input" multiple hidden>
+        <button type="button" id="drawer-attach" class="attach-btn" title="Attach files or images" aria-label="Attach files or images">
+          <span aria-hidden="true">📎</span>
+        </button>
+        <button type="submit">Add</button>
+      </div>
     </form>
   </div>
 </aside>

@@ -13,6 +13,7 @@ const state = {
   automation: null,      // manager automation status for the selected workspace
   automationTimer: null,
   dragging: null,        // { id, status }
+  returnFocus: null,     // element focused before the drawer opened
   showVerified: localStorage.getItem("vibe.showVerified") === "1",
   newTicketFiles: [],    // File objects staged for the next ticket
   theme: localStorage.getItem("vibe.theme") === "light" ? "light" : "dark",
@@ -21,9 +22,18 @@ const state = {
 const STATUS_LABEL = {
   pending: "pending",
   in_progress: "in progress",
-  needs_input: "needs input",
+  needs_input: "needs you",
   finished: "finished",
   verified: "verified",
+};
+
+// An empty lane is an invitation to act, not a blank box.
+const LANE_EMPTY = {
+  pending: "Nothing queued. Send a request above.",
+  in_progress: "No agent is working right now.",
+  needs_input: "Nothing is waiting on you.",
+  finished: "Finished work lands here for a look.",
+  verified: "Verified work is filed here.",
 };
 
 /* ------------------------------------------------------------------ api */
@@ -102,7 +112,7 @@ async function loadWorkspaces() {
   state.workspaces = data;
   const sel = $("#workspace-select");
   const current = sel.value;
-  sel.innerHTML = '<option value="">— pick a workspace —</option>';
+  sel.innerHTML = '<option value="">Choose a workspace</option>';
 
   const selectedPaths = new Set(data.selected.map((w) => w.path));
   if (data.selected.length) {
@@ -225,7 +235,7 @@ function fmtAgo(iso) {
   return `${Math.round(s / 86400)}d ago`;
 }
 
-const TRIGGER_HINT = "click to run the manager now";
+const TRIGGER_HINT = "Click to run the manager now";
 
 async function triggerManager() {
   if (!state.ws || !state.ws.automation_id) return;
@@ -252,7 +262,7 @@ function renderMgrBadge() {
   if (badge.classList.contains("triggering")) return;
   if (!a || a.automation_id !== state.ws.automation_id) {
     text.textContent = "manager";
-    badge.title = `Manager automation active for this workspace\n${TRIGGER_HINT}`;
+    badge.title = `Manager automation is watching this workspace\n${TRIGGER_HINT}`;
     return;
   }
   // Judge health by the last *finished* run so an in-flight retry (with a
@@ -344,6 +354,9 @@ function cardEl(t) {
   // finished + verified columns are time-ordered (most recent first), not
   // priority-ordered, so their cards aren't draggable.
   el.draggable = t.status !== "verified" && t.status !== "finished";
+  el.tabIndex = 0;
+  el.setAttribute("role", "button");
+  el.setAttribute("aria-label", `Open request ${t.title || t.entries[0]?.body?.slice(0, 60) || t.id.slice(0, 6)}`);
 
   if (t.title) {
     const title = document.createElement("div");
@@ -357,14 +370,6 @@ function cardEl(t) {
   body.textContent = firstEntry;
   el.appendChild(body);
 
-  if (t.status === "finished") {
-    const btn = document.createElement("button");
-    btn.className = "verify-btn";
-    btn.textContent = "✓ mark verified";
-    btn.addEventListener("click", (e) => { e.stopPropagation(); verifyTicket(t.id); });
-    el.appendChild(btn);
-  }
-
   if (t.manager_note) {
     const note = document.createElement("div");
     note.className = "card-note";
@@ -373,6 +378,7 @@ function cardEl(t) {
   }
 
   if (t.status === "in_progress" && t.latest_action?.summary) {
+    el.classList.add("live");
     const act = document.createElement("div");
     act.className = "card-activity";
     act.title = t.latest_action.tool ? `tool: ${t.latest_action.tool}` : "";
@@ -397,7 +403,7 @@ function cardEl(t) {
   if (t.entries.length > 1) {
     const chip = document.createElement("span");
     chip.className = "chip entries";
-    chip.textContent = `✎ ${t.entries.length}`;
+    chip.textContent = `${t.entries.length} entries`;
     meta.appendChild(chip);
   }
   if ((t.attachments || []).length) {
@@ -412,7 +418,7 @@ function cardEl(t) {
     a.href = t.conversation_url;
     a.target = "_blank";
     a.rel = "noopener";
-    a.textContent = "⇢ convo";
+    a.textContent = "↗ conversation";
     a.addEventListener("click", (e) => e.stopPropagation());
     meta.appendChild(a);
   }
@@ -422,11 +428,19 @@ function cardEl(t) {
     a.href = t.pr_url;
     a.target = "_blank";
     a.rel = "noopener";
-    a.textContent = "⇡ PR";
+    a.textContent = "↗ pull request";
     a.addEventListener("click", (e) => e.stopPropagation());
     meta.appendChild(a);
   }
   el.appendChild(meta);
+
+  if (t.status === "finished") {
+    const btn = document.createElement("button");
+    btn.className = "verify-btn";
+    btn.textContent = "Mark verified";
+    btn.addEventListener("click", (e) => { e.stopPropagation(); verifyTicket(t.id); });
+    el.appendChild(btn);
+  }
 
   if (el.draggable) {
     const handle = document.createElement("span");
@@ -436,6 +450,10 @@ function cardEl(t) {
   }
 
   el.addEventListener("click", () => openDrawer(t.id));
+  el.addEventListener("keydown", (e) => {
+    if (e.target !== el) return;
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDrawer(t.id); }
+  });
   el.addEventListener("dragstart", (e) => {
     state.dragging = { id: t.id, status: t.status };
     el.classList.add("dragging");
@@ -481,7 +499,14 @@ function renderBoard() {
           : status === "finished"
             ? (b.finished_at ?? b.updated_at) - (a.finished_at ?? a.updated_at)
             : a.sort_order - b.sort_order || a.created_at - b.created_at);
-    for (const t of tickets) container.appendChild(cardEl(t));
+    if (tickets.length) {
+      for (const t of tickets) container.appendChild(cardEl(t));
+    } else {
+      const empty = document.createElement("p");
+      empty.className = "lane-empty";
+      empty.textContent = LANE_EMPTY[status];
+      container.appendChild(empty);
+    }
     $(`.col[data-status="${status}"] .col-count`).textContent = tickets.length || "";
   }
 }
@@ -592,13 +617,14 @@ function toggleVerified() {
 
 function renderVerifiedToggle() {
   const btn = $("#show-verified");
-  btn.textContent = state.showVerified ? "✓ hide verified" : "✓ show verified";
+  btn.textContent = state.showVerified ? "Hide verified" : "Show verified";
   btn.classList.toggle("active", state.showVerified);
 }
 
 /* ---------------------------------------------------------------- drawer */
 
 function openDrawer(ticketId) {
+  state.returnFocus = document.activeElement;
   state.drawerTicketId = ticketId;
   $("#drawer").hidden = false;
   renderDrawer();
@@ -606,8 +632,12 @@ function openDrawer(ticketId) {
 }
 
 function closeDrawer() {
+  if (!state.drawerTicketId) return;
   state.drawerTicketId = null;
   $("#drawer").hidden = true;
+  const back = state.returnFocus;
+  state.returnFocus = null;
+  if (back?.isConnected) back.focus();
 }
 
 function fmtTime(ts) {
@@ -633,14 +663,14 @@ function renderDrawer() {
     const a = document.createElement("a");
     a.className = "chip convo";
     a.href = t.conversation_url; a.target = "_blank"; a.rel = "noopener";
-    a.textContent = "⇢ open conversation";
+    a.textContent = "↗ open conversation";
     links.appendChild(a);
   }
   if (t.pr_url) {
     const a = document.createElement("a");
     a.className = "chip pr";
     a.href = t.pr_url; a.target = "_blank"; a.rel = "noopener";
-    a.textContent = "⇡ open pull request";
+    a.textContent = "↗ open pull request";
     links.appendChild(a);
   }
   if (t.llm_model) links.appendChild(modelChip(t.llm_model));
@@ -780,8 +810,8 @@ function applyTheme() {
   if (light) document.documentElement.dataset.theme = "light";
   else delete document.documentElement.dataset.theme;
   const btn = $("#theme-toggle");
-  btn.textContent = light ? "☾ dark" : "☀ light";
-  btn.title = light ? "switch to dark mode" : "switch to light mode";
+  btn.textContent = light ? "Dark" : "Light";
+  btn.title = light ? "Switch to dark mode" : "Switch to light mode";
 }
 
 function toggleTheme() {

@@ -177,20 +177,43 @@ via /etc/nginx/.htpasswd).
   /workspace/{path:path}` so deep links work (nginx proxies everything, no
   nginx change needed). Asset URLs are absolute (`/assets/...`) so nested
   paths render fine.
+- **Visual language ("agent dispatch", 2026-05-21 overhaul)**: the board is
+  designed as a dispatch console. The governing rule is **hue encodes lane,
+  controls stay neutral** — each column owns a signal colour
+  (`--lane-pending` steel / `--lane-progress` teal / `--lane-input` amber /
+  `--lane-done` iris / `--lane-verified` green) exposed to its cards through
+  the inherited `--lane` custom property set on `.col[data-status=...]`, so a
+  card's left rail, the column's top rail and its count all share one hue.
+  Primary buttons are neutral chalk-on-ink (`--btn-bg`/`--btn-text`), and the
+  single `--flare` (orange) is reserved for focus rings, the brand mark and
+  drag drop indicators. Signature element: `.card.live` (added by app.js when
+  an in_progress ticket has a `latest_action`) animates a light travelling
+  down the lane rail while the telemetry line types out with a caret.
+  Type: Archivo (variable `wdth` axis, used expanded + uppercase for lane
+  signage, brand and buttons), Public Sans for body copy, Azeret Mono for
+  ids/timestamps/telemetry. Spacing uses the `--s1..--s7` scale.
+  Non-negotiables: font sizes stay in `rem`, `[hidden] { display: none
+  !important }` sits near the top of style.css (many components are
+  `display:flex`, which otherwise defeats the `hidden` attribute the SPA
+  toggles), empty lanes render `.lane-empty` invite copy from `LANE_EMPTY`
+  in app.js, cards are keyboard-operable (`role=button` + tabindex, Enter/
+  Space opens the drawer, focus returns to the card on close) and
+  `prefers-reduced-motion` kills the animations.
 - **Theming (light/dark)**: dark is the default; light mode is a full CSS-
   variable override under `html[data-theme="light"]` in static/style.css. ALL
   colors in the stylesheet must be var() tokens defined in `:root` (incl.
-  border/glow/backdrop tokens like `--amber-line`, `--accent-glow`,
-  `--topbar-bg`, `--accent-contrast` for text on solid accent buttons) ŌĆö
+  border/glow/backdrop/lane tokens like `--lane-input`, `--flare-ring`,
+  `--topbar-bg`, `--btn-text` for text on solid neutral buttons) ŌĆö
   never hardcode a hex/rgba outside the two token blocks, or light mode
   breaks. The topbar `#theme-toggle` button flips the theme
   (`applyTheme`/`toggleTheme` in app.js), persisted in localStorage
   `vibe.theme`; an inline `<script>` in index.html's head applies the saved
   theme before first paint to avoid a flash.
-  - Light palette was deliberately softened (d7a46d5): warm off-white
-    surfaces (no pure #fff cards), low-opacity shadows/glows, eased
-    near-black text, desaturated accents. Keep new light-mode tokens muted
-    to match — "less jarring" is a user requirement.
+  - Light palette is deliberately soft (d7a46d5, restated in the 2026-05-21
+    overhaul): off-white lilac-paper surfaces (no pure #fff cards or fields),
+    low-opacity shadows/glows, eased near-black text, desaturated lane
+    colours. Keep new light-mode tokens muted to match — "less jarring" is a
+    user requirement.
 - `static/` ├óŌé¼ŌĆØ vanilla JS SPA (no build step). Kanban columns: pending,
   in_progress, needs_input, finished. Drag vertically to reprioritize; click
   a card for the append-only drawer; each card links to its conversation.
