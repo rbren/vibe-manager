@@ -124,6 +124,13 @@ def init_db() -> None:
             conn.execute("ALTER TABLE tickets ADD COLUMN verified_at REAL")
         if "title" not in cols:
             conn.execute("ALTER TABLE tickets ADD COLUMN title TEXT")
+        if "finished_at" not in cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN finished_at REAL")
+            # Backfill: best guess for rows finished before this column existed.
+            conn.execute(
+                "UPDATE tickets SET finished_at=COALESCE(verified_at, updated_at) "
+                "WHERE status IN ('finished', 'verified') AND finished_at IS NULL"
+            )
 
 
 init_db()
@@ -1063,6 +1070,8 @@ def manager_patch_ticket(ticket_id: str, req: ManagerPatch):
             if req.status not in STATUSES:
                 raise HTTPException(400, "bad status")
             updates["status"] = req.status
+            if req.status == "finished" and row["status"] != "finished":
+                updates["finished_at"] = now
         if req.title is not None:
             updates["title"] = req.title.strip() or None
         if req.conversation_id is not None:

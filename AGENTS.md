@@ -199,6 +199,14 @@ via /etc/nginx/.htpasswd).
   tickets leave the board and appear in a fifth column (most recently
   verified first) toggled by the top-bar "show verified" button. The
   automation ignores verified tickets entirely (terminal state).
+- **Finished column ordering**: tickets carry a `finished_at` timestamp,
+  stamped by the manager PATCH endpoint on the transition INTO finished
+  (idempotent re-PATCH keeps it; a reopen + re-finish refreshes it; the
+  migration backfilled existing rows with COALESCE(verified_at, updated_at)).
+  The SPA sorts the finished column by finished_at desc — most recently
+  finished first, like verified — and finished/verified cards are NOT
+  draggable (priority drag applies only to pending/in_progress/needs_input).
+  Tests: `tests/test_finished_order.py`.
 
 ## Key facts / gotchas
 

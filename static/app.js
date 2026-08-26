@@ -341,7 +341,9 @@ function cardEl(t) {
   const el = document.createElement("div");
   el.className = "card";
   el.dataset.id = t.id;
-  el.draggable = t.status !== "verified";
+  // finished + verified columns are time-ordered (most recent first), not
+  // priority-ordered, so their cards aren't draggable.
+  el.draggable = t.status !== "verified" && t.status !== "finished";
 
   if (t.title) {
     const title = document.createElement("div");
@@ -426,7 +428,7 @@ function cardEl(t) {
   }
   el.appendChild(meta);
 
-  if (t.status !== "verified") {
+  if (el.draggable) {
     const handle = document.createElement("span");
     handle.className = "drag-handle";
     handle.textContent = "⋮⋮";
@@ -476,7 +478,9 @@ function renderBoard() {
       .sort((a, b) =>
         status === "verified"
           ? (b.verified_at ?? b.updated_at) - (a.verified_at ?? a.updated_at)
-          : a.sort_order - b.sort_order || a.created_at - b.created_at);
+          : status === "finished"
+            ? (b.finished_at ?? b.updated_at) - (a.finished_at ?? a.updated_at)
+            : a.sort_order - b.sort_order || a.created_at - b.created_at);
     for (const t of tickets) container.appendChild(cardEl(t));
     $(`.col[data-status="${status}"] .col-count`).textContent = tickets.length || "";
   }
