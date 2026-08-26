@@ -27,16 +27,14 @@
 
   <div class="topbar-controls">
     <div class="control control-workspace">
-      <label class="control-label" for="workspace-select">Workspace</label>
-      <select id="workspace-select"><option value="">Choose a workspace</option></select>
+      <select id="workspace-select" aria-label="Workspace"><option value="">Choose a workspace</option></select>
     </div>
     <div class="control" id="ctl-concurrency" hidden>
-      <label class="control-label" for="max-concurrent">Agents at once</label>
+      <label class="control-label" for="max-concurrent">Max agents</label>
       <input id="max-concurrent" type="number" min="1" max="20" value="3">
     </div>
     <div class="control" id="ctl-pushmode" hidden>
-      <span class="control-label" id="push-mode-label">Landing</span>
-      <div class="seg" id="push-mode" role="group" aria-labelledby="push-mode-label">
+      <div class="seg" id="push-mode" role="group" aria-label="Where changes land">
         <button type="button" data-mode="pr" class="seg-btn">Pull request</button>
         <button type="button" data-mode="main" class="seg-btn">Push to main</button>
       </div>
@@ -70,7 +68,6 @@
     <form id="new-ticket-form" class="desk" autocomplete="off">
       <div class="desk-head">
         <span class="eyebrow">New request</span>
-        <span class="desk-hint">Enter sends · Shift + Enter adds a line</span>
       </div>
       <div class="ticket-form-row">
         <textarea id="new-ticket-body" rows="2" aria-label="What should the agents build?"

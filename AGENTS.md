@@ -199,6 +199,13 @@ via /etc/nginx/.htpasswd).
   in app.js, cards are keyboard-operable (`role=button` + tabindex, Enter/
   Space opens the drawer, focus returns to the card on close) and
   `prefers-reduced-motion` kills the animations.
+  - User trims (2026-05-21, same ticket): the page background is FLAT
+    `var(--ink)` — no radial-gradient glows (the `--glow-*` tokens are gone);
+    the topbar carries no "Workspace" or "Landing" labels (those controls are
+    self-evident and keep only `aria-label`s), the only visible topbar label
+    is "Max agents", set inline to the LEFT of the number input; and the
+    composer shows no "Enter sends…" keyboard hint. Don't reintroduce any of
+    them.
 - **Theming (light/dark)**: dark is the default; light mode is a full CSS-
   variable override under `html[data-theme="light"]` in static/style.css. ALL
   colors in the stylesheet must be var() tokens defined in `:root` (incl.
