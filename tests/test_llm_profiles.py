@@ -198,6 +198,19 @@ def test_manager_prompt_note_style_rule():
     print("ok: manager prompt enforces status-only note style with deferral exception")
 
 
+def test_manager_prompt_one_conversation_per_ticket():
+    """New tickets never get grafted onto a finished ticket's conversation."""
+    mod = _load_automation("http://127.0.0.1:1")
+    ws = {"max_concurrent": 2, "push_mode": "main"}
+    prompt = mod.build_manager_prompt(ws, [])
+    assert "One conversation per ticket" in prompt
+    assert "never graft a new ticket onto another ticket's conversation" in prompt
+    assert "finished/verified it is retired" in prompt
+    assert "Reuse old conversations when sensible" not in prompt  # retired guidance
+    assert "SAME ticket still reuse its own conversation" in prompt
+    print("ok: manager prompt retires finished conversations, fresh one per ticket")
+
+
 if __name__ == "__main__":
     test_llm_profiles_endpoint_proxies_agent_server()
     test_agent_settings_default_untouched()
@@ -206,4 +219,5 @@ if __name__ == "__main__":
     test_manager_prompt_lists_models()
     test_manager_prompt_degrades_without_vibe_api()
     test_manager_prompt_note_style_rule()
+    test_manager_prompt_one_conversation_per_ticket()
     print("all llm profile tests passed")

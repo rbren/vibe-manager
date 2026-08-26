@@ -12,8 +12,8 @@ Deterministic phase (pure stdlib, no LLM):
      needs_input worker directly) are tracked between runs.
 
 Only when the fingerprint changed AND something is actionable does it kick off
-the Manager agent conversation, which does the smart work: dispatching /
-reusing worker conversations (always in git worktrees), serializing
+the Manager agent conversation, which does the smart work: dispatching worker
+conversations (always in git worktrees, one per ticket), serializing
 conflicting tickets, updating card statuses, and maintaining AGENTS.md.
 The manager runs asynchronously; subsequent cycles skip while it is running.
 """
@@ -503,13 +503,13 @@ Agent server API (read-only inspection): base `{AGENT_SERVER}`, header `X-Sessio
    - Conversely, if a ticket's conversation_status is **running** but the ticket is needs_input/finished/pending, the user likely resumed the agent manually (sent it a message directly). Set the ticket status back to in_progress (and clear a stale manager_note) so the board reflects that the agent is working again.
 3. For tickets with NEW user entries beyond dispatched_entry_count:
    - Only user/agent-authored entries count as new requests. If the entries beyond dispatched_entry_count are all manager comments (yours), there is nothing to relay — bump dispatched_entry_count to the current entry count so the board reads as fully dispatched, and move on.
-   - If the ticket already has a conversation, prefer **reusing it**: send the new request as a follow-up message to that conversation, bump dispatched_entry_count to the current entry count, and ensure status is in_progress.
+   - If the ticket already has its OWN conversation, prefer **reusing it**: send the new request as a follow-up message to that conversation, bump dispatched_entry_count to the current entry count, and ensure status is in_progress.
    - A finished/needs_input ticket that receives a new user entry is automatically moved back to pending by the app; it moves to in_progress once you dispatch the follow-up.
 4. For pending tickets with no conversation: dispatch workers, **highest priority first** (lower priority_rank = higher priority; the user orders cards within columns).
    - Respect the concurrency cap: count worker conversations currently in execution_status "running" on this board; never exceed **{ws['max_concurrent']}**.
    - **Avoid conflicts**: think about which tickets touch the same files/subsystems. Serialize tickets that would collide — run only independent tickets concurrently.
    - **Deferral contract**: if you deliberately leave a pending ticket undispatched (conflict serialization, capacity, needs another ticket first), you MUST set a manager_note on it (e.g. "queued behind a1b2c3 to avoid conflicts in the audio engine"). This suppresses re-invocation loops. Clear/replace the note when you later dispatch it.
-   - **Reuse old conversations when sensible**: if a new ticket clearly refines or extends work a recent conversation did (check other tickets' conversation ids and topics), send it as a follow-up to that conversation instead of starting fresh — the accumulated context helps. Then PATCH that conversation id onto the new ticket.
+   - **One conversation per ticket**: never graft a new ticket onto another ticket's conversation, however related. A conversation belongs to the ticket it was created for, and once that ticket is finished/verified it is retired — every new ticket gets a fresh conversation. (Follow-ups on the SAME ticket still reuse its own conversation — see 3.) Carry over context by putting it in the new worker's prompt, not by reusing the old thread.
 5. Worker task prompts must be self-contained: the full ticket text (all user entries), the project path, a reminder to read AGENTS.md first, the push-mode instructions above (branch+PR, or push directly to main), and — in PR mode — to report the PR URL in their final message.
    - **Attachments**: tickets may carry file/image attachments (see each ticket's `attachments` array). Each has a stable absolute `path` on this machine, readable from worker worktrees. In the worker prompt, list every attachment as `<filename> (<content_type>) at <path>` and tell the worker to read/view it from that path (agents can view images with the file viewer). Workers must `cp` an attachment into their worktree only if it should become part of the repo. Never inline file contents into the prompt yourself.
 6. Update every card you acted on: status, conversation_id, manager_note, dispatched_entry_count, and append_entry comments where the user needs context. Every ticket you dispatch MUST get its conversation_id set so the card links to its conversation.

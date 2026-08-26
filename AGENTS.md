@@ -96,6 +96,13 @@ via /etc/nginx/.htpasswd).
   needs_input append_entry may carry the specific question for the user.
   Enforced via the "Note style rule" in the manager prompt
   (automation/main.py item 6).
+- **One conversation per ticket** (user request 2026-05-21): the Manager must
+  never graft a NEW ticket onto another ticket's conversation — once a ticket
+  is finished/verified its conversation is retired. Follow-up entries on the
+  SAME ticket still reuse that ticket's own conversation. Enforced via the
+  "One conversation per ticket" rule in the manager prompt (automation/main.py
+  item 4, replacing the old "Reuse old conversations when sensible"
+  guidance). Tests: `tests/test_llm_profiles.py`.
 - **Ticket titles**: tickets have a nullable `title` column, included in every
   ticket dict (board AND manager snapshot) and settable via the manager PATCH
   endpoint (`/api/manager/tickets/<id>`, trimmed; blank clears it). The SPA
