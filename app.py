@@ -932,6 +932,71 @@ def _git(project: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _origin_default_ref(project: Path) -> str | None:
+    """Remote-tracking ref of origin's default branch (e.g. `origin/master`).
+
+    Returns None when the project has no origin remote. `origin/HEAD` is
+    missing in clones made with `--single-branch` and in repos whose remote
+    was added by hand, so it is resolved from the remote when absent.
+    """
+    if _git(project, "remote", "get-url", "origin").returncode != 0:
+        return None
+    head = _git(project, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    if head.returncode != 0:
+        _git(project, "remote", "set-head", "origin", "--auto")
+        head = _git(project, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+        if head.returncode != 0:
+            return None
+    return head.stdout.strip().removeprefix("refs/remotes/")
+
+
+def _fast_forward_project(project: Path, default_ref: str) -> None:
+    """Fast-forward the project checkout so it stops drifting behind origin.
+
+    Deliberately a no-op unless the checkout is on the default branch, clean
+    and strictly behind origin: never touch a human's in-flight work.
+    """
+    branch = _git(project, "symbolic-ref", "--quiet", "--short", "HEAD")
+    if branch.returncode != 0 or branch.stdout.strip() != default_ref.split("/", 1)[1]:
+        return
+    if _git(project, "status", "--porcelain").stdout.strip():
+        return
+    r = _git(project, "merge", "--ff-only", default_ref)
+    if r.returncode != 0:
+        log.info("checkout %s not fast-forwardable to %s: %s",
+                 project, default_ref, r.stderr.strip()[:200])
+
+
+def _sync_project_checkout(project: Path) -> str | None:
+    """Fetch origin and fast-forward the project checkout to origin's default.
+
+    Returns the remote-tracking ref workers should branch from, or None for
+    repos without an origin remote. A failed fetch raises instead of falling
+    back to a possibly stale local ref, so workers never start from a base
+    that is behind the default branch.
+    """
+    default_ref = _origin_default_ref(project)
+    if default_ref is None:
+        return None
+    r = _git(project, "fetch", "--prune", "origin")
+    if r.returncode != 0:
+        raise HTTPException(502, f"git fetch origin failed in {project}: {r.stderr.strip()[:300]}")
+    _fast_forward_project(project, default_ref)
+    return default_ref
+
+
+def _refresh_workspace_checkout(working_dir: str) -> None:
+    """Best-effort variant of _sync_project_checkout for in-place conversations.
+
+    Manager conversations run in the checkout itself, so they need it current,
+    but a fetch failure must not block coordination work.
+    """
+    try:
+        _sync_project_checkout(Path(working_dir).resolve())
+    except (HTTPException, OSError, subprocess.SubprocessError) as exc:
+        log.info("workspace refresh failed for %s: %s", working_dir, exc)
+
+
 def _provision_worker_worktree(working_dir: str, conv_id: str) -> dict:
     """Create an isolation git worktree for a worker conversation.
 
@@ -944,14 +1009,8 @@ def _provision_worker_worktree(working_dir: str, conv_id: str) -> dict:
     """
     project = Path(working_dir).resolve()
     wt_path = WORKTREE_ROOT / conv_id / project.name
+    start = _sync_project_checkout(project) or "HEAD"
     wt_path.parent.mkdir(parents=True, exist_ok=True)
-    # Base the worktree on the freshest origin default branch when there is
-    # one, falling back to local HEAD (mirrors agent-server behavior).
-    start = "HEAD"
-    head_ref = _git(project, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
-    if head_ref.returncode == 0:
-        _git(project, "fetch", "origin")  # best-effort freshness
-        start = head_ref.stdout.strip().removeprefix("refs/remotes/")
     branch = f"openhands/{conv_id}"
     r = _git(project, "worktree", "add", "-b", branch, str(wt_path), start)
     if r.returncode != 0:
@@ -1017,6 +1076,8 @@ def manager_start_conversation(req: StartConversation):
         if req.worktree:
             wt = _provision_worker_worktree(req.working_dir, conv_id)
             prompt += _worktree_guidance(req.working_dir, wt)
+        else:
+            _refresh_workspace_checkout(req.working_dir)
         tags = {
             "workspace": req.working_dir,
             "viberole": req.role,

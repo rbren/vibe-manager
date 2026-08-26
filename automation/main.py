@@ -460,6 +460,11 @@ def build_manager_prompt(ws: dict, tickets: list[dict]) -> str:
         "default branch (main). When a worker finishes and its commits are on main, set the ticket status "
         "to finished. Verify with `git log origin/main` if unsure."
     )
+    push_instructions += (
+        " Worker worktrees are branched off the freshly fetched default branch, but tell every worker to "
+        "`git fetch origin` and rebase onto the latest default branch right before pushing, so concurrent "
+        "workers never land on a stale base."
+    )
     return f"""You are the **Vibe Manager** for the project at `{WORKSPACE_PATH}` (workspace id `{WORKSPACE_ID}`).
 You manage a kanban queue of vibecoding tickets and a pool of worker agent conversations. You do NOT write feature code yourself — you dispatch and coordinate workers.
 

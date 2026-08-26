@@ -253,6 +253,19 @@ via /etc/nginx/.htpasswd).
   from the workspace (that's what put everything under "no workspace").
   Manager conversations run directly in the workspace to maintain AGENTS.md.
   Tests: `tests/test_worker_worktree.py`.
+  - **Freshness (2026-05-21)**: `_sync_project_checkout` runs before every
+    worktree is added — it resolves origin's default branch (`origin/HEAD`,
+    auto-set via `git remote set-head origin --auto` when missing, e.g.
+    `--single-branch` clones), `git fetch --prune origin`, and then
+    fast-forwards the PROJECT checkout (`_fast_forward_project`) so it stops
+    drifting behind origin. The fast-forward is skipped when the checkout is
+    dirty, detached, or on a non-default branch — never forced. A failed
+    fetch now raises 502 instead of silently falling back to local HEAD, so a
+    worker can't start from a stale base. Manager conversations
+    (`worktree: false`) get the same refresh best-effort via
+    `_refresh_workspace_checkout` (failures logged, never block dispatch).
+    The manager prompt also tells workers to fetch+rebase right before
+    pushing (automation/main.py `push_instructions`).
 - Every conversation started via `/api/manager/conversations` gets tags:
   `workspace=<project path>` (so the canvas UI groups it under the right
   workspace ŌĆö the worktree working_dir alone is NOT enough) and
