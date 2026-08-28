@@ -4,7 +4,11 @@ Replaces the SQLite database. All state lives as JSON under a single root so
 both the Canvas extension (via the agent-server file API) and
 `automation/main.py` (via plain filesystem reads) can use it.
 
-Root: `~/.openhands/vibe-manager/` (override with `VIBE_STORE_DIR`).
+Root: `$HOME/.openhands/vibe-manager/` (override with `VIBE_STORE_DIR`).
+
+The extension resolves `$HOME` at runtime from `GET /api/file/home` rather
+than assuming a user: the file API needs absolute paths and does not expand
+`~`, and the agent server does not always run as root.
 
 ```
 <root>/

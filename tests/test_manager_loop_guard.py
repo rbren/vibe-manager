@@ -31,7 +31,8 @@ for var in ("AUTOMATION_KV_TOKEN", "AUTOMATION_API_URL"):
 
 mod_dir = TMP / "automation"
 mod_dir.mkdir(parents=True)
-shutil.copy(REPO / "automation" / "main.py", mod_dir / "main.py")
+for _name in ("main.py", "vibestore.py", "vibectl.py"):
+    shutil.copy(REPO / "automation" / _name, mod_dir / _name)
 (mod_dir / "config.json").write_text(json.dumps({
     "workspace_id": "ws-test",
     "workspace_path": "/tmp/ws-test",

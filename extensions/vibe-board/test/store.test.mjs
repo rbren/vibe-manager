@@ -53,20 +53,20 @@ function makeHost() {
   };
 }
 
-/* A store whose board document lives under the temp root. STORE_ROOT is a
-   module constant baked into the path helpers, so the two board accessors are
-   redirected rather than mutating global state. */
-function scratchStore(name) {
-  const store = new Store(makeHost());
-  const wsId = newId();
-  const path = `${ROOT}/${name}-${wsId}.json`;
-  const empty = () => ({ version: 1, workspace_id: wsId, tickets: [] });
-  store.readBoard = async () => {
-    const board = await store.readJson(path, empty());
-    return { ...board, tickets: board.tickets || [] };
+/** A host that cannot answer /api/file/home, to prove the root is not fetched. */
+function brokenHomeHost() {
+  return {
+    backend: { id: "local" },
+    agentServer: { async request() { throw new Error("home should not be requested"); } },
   };
-  store.writeBoard = async (_id, board) => store.writeJson(path, board);
-  return { store, wsId };
+}
+
+/* A store rooted at the temp dir. The root is injected via the constructor,
+   so the real path helpers (and therefore the real file layout) are exercised
+   rather than being stubbed out. */
+function scratchStore() {
+  const store = new Store(makeHost(), ROOT);
+  return { store, wsId: newId() };
 }
 
 before(() => {
@@ -97,6 +97,56 @@ test("isNotFound recognises 404 by status and message", () => {
   assert.equal(isNotFound(new Error("404 Not Found")), true);
   assert.equal(isNotFound({ status: 500 }), false);
   assert.equal(isNotFound(new Error("boom")), false);
+});
+
+test("storeRoot resolves the real home directory from the agent server", async () => {
+  const store = new Store(makeHost());
+  const root = await store.storeRoot();
+  assert.match(root, /^\/.*\/\.openhands\/vibe-manager$/, `unexpected root ${root}`);
+  assert.ok(!root.startsWith("~"), "tilde must be expanded, the file API cannot");
+  // Matches the home the agent server actually reports, not a hardcoded user.
+  const home = await makeHost().agentServer.request({ path: "/api/file/home" });
+  const parsed = typeof home === "string" ? JSON.parse(home) : home;
+  assert.equal(root, `${parsed.home}/.openhands/vibe-manager`);
+});
+
+test("storeRoot is resolved once and reused", async () => {
+  let calls = 0;
+  const host = makeHost();
+  const inner = host.agentServer.request.bind(host.agentServer);
+  host.agentServer.request = async (opts) => {
+    if (opts.path === "/api/file/home") calls += 1;
+    return inner(opts);
+  };
+  const store = new Store(host);
+  await Promise.all([store.storeRoot(), store.storeRoot(), store.storeRoot()]);
+  await store.storeRoot();
+  assert.equal(calls, 1, "home is fetched once even under concurrent callers");
+});
+
+test("storeRoot retries after a failure instead of caching it", async () => {
+  let fail = true;
+  const host = makeHost();
+  const inner = host.agentServer.request.bind(host.agentServer);
+  host.agentServer.request = async (opts) => {
+    if (opts.path === "/api/file/home" && fail) throw new Error("boom");
+    return inner(opts);
+  };
+  const store = new Store(host);
+  await assert.rejects(() => store.storeRoot(), /boom/);
+  fail = false;
+  assert.match(await store.storeRoot(), /\.openhands\/vibe-manager$/);
+});
+
+test("an explicit root overrides home resolution", async () => {
+  const store = new Store(brokenHomeHost(), "/custom/root");
+  assert.equal(await store.storeRoot(), "/custom/root");
+  assert.equal(await store.indexPath(), "/custom/root/index.json");
+  assert.equal(await store.boardPath("w1"), "/custom/root/workspaces/w1/board.json");
+  assert.equal(
+    await store.attachmentPath("a1", "x.png"),
+    "/custom/root/attachments/a1/x.png",
+  );
 });
 
 test("readJson returns the fallback for a missing file (real 404)", async () => {
@@ -130,7 +180,7 @@ test("writeFile creates missing parent directories", async () => {
    workspace/ticket logic through a store pointed at a scratch board file. */
 
 test("board mutations: create, append, reopen, verify, reorder", async () => {
-  const { store, wsId } = scratchStore("board");
+  const { store, wsId } = scratchStore();
 
   const t1 = await store.createTicket(wsId, "  first ticket  ");
   assert.equal(t1.status, "pending");
@@ -190,7 +240,7 @@ test("board mutations: create, append, reopen, verify, reorder", async () => {
 });
 
 test("verifyTicket stamps verified_at and is rejected for unknown ids", async () => {
-  const { store, wsId } = scratchStore("verify");
+  const { store, wsId } = scratchStore();
 
   const t = await store.createTicket(wsId, "done thing");
   const before = Date.now() / 1000;

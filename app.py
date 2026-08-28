@@ -1205,9 +1205,11 @@ def _automation_name(ws_id: str, ws_name: str) -> str:
     return f"Vibe Manager — {ws_name} ({ws_id})"
 
 
+AUTOMATION_MODULES = ("main.py", "vibestore.py", "vibectl.py")
+
+
 def build_manager_tarball(ws: dict) -> bytes:
-    """Package automation/main.py + a per-workspace config.json into a tar.gz."""
-    main_py = (ROOT / "automation" / "main.py").read_bytes()
+    """Package the automation modules + a per-workspace config.json as tar.gz."""
     config = json.dumps(
         {
             "workspace_id": ws["id"],
@@ -1219,9 +1221,11 @@ def build_manager_tarball(ws: dict) -> bytes:
         },
         indent=2,
     ).encode()
+    members = [(n, (ROOT / "automation" / n).read_bytes()) for n in AUTOMATION_MODULES]
+    members.append(("config.json", config))
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for name, data in (("main.py", main_py), ("config.json", config)):
+        for name, data in members:
             info = tarfile.TarInfo(name)
             info.size = len(data)
             info.mtime = int(time.time())

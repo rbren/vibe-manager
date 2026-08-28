@@ -24,18 +24,28 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+import vibestore  # noqa: E402 - must follow the sys.path shim above
+
 CONFIG = json.loads((Path(__file__).parent / "config.json").read_text())
 WORKSPACE_ID = CONFIG["workspace_id"]
 WORKSPACE_PATH = CONFIG["workspace_path"]
 WORKSPACE_NAME = CONFIG["workspace_name"]
-VIBE_API = CONFIG["vibe_api"].rstrip("/")
 CANVAS_BASE = CONFIG["canvas_base"].rstrip("/")
+
+if CONFIG.get("store_dir"):
+    os.environ.setdefault("VIBE_STORE_DIR", CONFIG["store_dir"])
+
+# Installed outside the per-run tarball dir so the manager conversation can
+# still call it after this run is cleaned up.
+VIBECTL = vibestore.install_cli(WORKSPACE_ID, WORKSPACE_PATH)
 
 AGENT_SERVER = os.environ.get("AGENT_SERVER_URL", CONFIG["agent_server"]).rstrip("/")
 SESSION_KEY = os.environ.get("SESSION_API_KEY") or os.environ.get("OH_SESSION_API_KEYS_0", "")
@@ -61,10 +71,6 @@ def _request(url: str, method: str = "GET", data: dict | None = None,
     with urllib.request.urlopen(req, timeout=timeout) as r:
         raw = r.read()
     return json.loads(raw) if raw else {}
-
-
-def vibe(path: str, method: str = "GET", data: dict | None = None):
-    return _request(f"{VIBE_API}{path}", method, data)
 
 
 def agent(path: str, method: str = "GET", data: dict | None = None, timeout: int = 60):
@@ -223,7 +229,7 @@ def pr_state(pr_url: str, token: str) -> str:
 
 
 def snapshot() -> dict:
-    return vibe(f"/api/manager/workspaces/{WORKSPACE_ID}/snapshot")
+    return vibestore.snapshot(WORKSPACE_ID)
 
 
 def enrich(board: dict) -> tuple[dict, list[dict]]:
@@ -280,7 +286,9 @@ def apply_mechanical_transitions(tickets: list[dict]) -> None:
                 new_status, note = "needs_input", "PR is open and awaiting review."
         if new_status:
             print(f"mechanical: ticket {t['id']} {t['status']} -> {new_status} (pr {prs})")
-            vibe(f"/api/manager/tickets/{t['id']}", "PATCH", {"status": new_status, "manager_note": note})
+            vibestore.patch_ticket(
+                WORKSPACE_ID, t["id"], status=new_status, manager_note=note
+            )
             t["status"] = new_status
 
 
@@ -387,11 +395,11 @@ def conv_statuses(tickets: list[dict]) -> dict[str, str]:
 def model_selection_instructions() -> str:
     """Manager-prompt section listing the agent server's LLM profiles.
 
-    Degrades to a self-serve instruction if the vibe API is unreachable at
+    Degrades to a self-serve instruction if the agent server is unreachable at
     prompt-build time so the manager can still pick a model.
     """
     try:
-        data = vibe("/api/manager/llm-profiles")
+        data = vibestore.llm_profiles()
         active = data.get("active_profile")
         lines = "\n".join(
             f"- `{p['name']}` → {p['model']}"
@@ -401,18 +409,15 @@ def model_selection_instructions() -> str:
         if not lines:
             raise ValueError("no profiles")
     except Exception:
-        lines = (
-            f"- query `GET {VIBE_API}/api/manager/llm-profiles` for the "
-            "current list (name → model, plus the active default)"
-        )
+        lines = f"- run `{VIBECTL} profiles` for the current list (name → model)"
     return f"""## Model selection for workers
 Available LLM profiles on the agent server:
 {lines}
-Choose a model PER TASK and pass it as `"llm_profile": "<name>"` in the worker-dispatch POST (omit the field to use the active default). Judge by the ticket's difficulty:
+Choose a model PER TASK and pass it as `--profile <name>` when dispatching (omit it to use the active default). Judge by the ticket's difficulty:
 - strongest/most expensive model → gnarly work: architecture, tricky debugging, large refactors, vague requirements
 - default → routine feature work and bug fixes
 - cheapest/fastest → trivial chores: copy tweaks, docs, config, one-liners
-Including `llm_profile` in a follow-up POST switches that EXISTING conversation's model first — escalate a stuck worker to a stronger model this way."""
+Passing `--profile` to a follow-up switches that EXISTING conversation's model first — escalate a stuck worker to a stronger model this way."""
 
 
 def build_manager_prompt(ws: dict, tickets: list[dict]) -> str:
@@ -437,7 +442,6 @@ def build_manager_prompt(ws: dict, tickets: list[dict]) -> str:
                     {
                         "filename": a["filename"],
                         "path": a["path"],
-                        "url": f"{VIBE_API}{a['url']}",
                         "content_type": a.get("content_type"),
                         "size": a.get("size"),
                     }
@@ -452,7 +456,7 @@ def build_manager_prompt(ws: dict, tickets: list[dict]) -> str:
         "Push mode is **pull request**: workers must create a feature branch in their worktree, commit, "
         "push the branch, and open a PR against the default branch (gh CLI is available; "
         "GITHUB_PERSONAL_ACCESS_TOKEN is auto-injected into their terminal). When a worker finishes and "
-        "reports a PR URL, PATCH the ticket with pr_url and set status to needs_input. "
+        "reports a PR URL, patch the ticket with --pr-url and --status needs_input. "
         "(PR merged -> finished is handled automatically; don't merge PRs yourself.)"
         if ws["push_mode"] == "pr"
         else
@@ -477,30 +481,29 @@ You manage a kanban queue of vibecoding tickets and a pool of worker agent conve
 - max concurrent worker conversations: **{ws['max_concurrent']}**
 - {push_instructions}
 
-## APIs at your disposal (use curl from the terminal)
+## Board control (run `{VIBECTL}` from the terminal)
 
-Vibe ticket API (no auth needed from this machine): base `{VIBE_API}`
-- `PATCH {VIBE_API}/api/manager/tickets/<ticket_id>` with JSON body; fields (all optional): `status` (pending|in_progress|needs_input|finished), `title` (see the title rule below), `conversation_id`, `pr_url`, `manager_note` (STATUS-ONLY one-liner shown on the card — see the note style rule; ALSO the contract for deferrals — see below), `dispatched_entry_count` (int — set to the number of entries you have relayed to the worker so far), `append_entry` (string — appends a visible manager comment to the ticket thread).
-- `GET {VIBE_API}/api/manager/workspaces/{WORKSPACE_ID}/snapshot` to re-read the board.
+Every command prints JSON. A non-zero exit means it failed — read the `error` field rather than assuming success. The workspace id and project path are already in the environment, so you never pass them.
+
+- **Update a ticket**: `{VIBECTL} patch <ticket_id> [options]`
+  Options (all optional): `--status pending|in_progress|needs_input|finished`, `--title` (see the title rule below), `--conversation-id`, `--pr-url`, `--manager-note` (STATUS-ONLY one-liner shown on the card — see the note style rule; ALSO the contract for deferrals — see below), `--dispatched-entry-count <int>` (entries you have relayed so far), `--append-entry` (visible manager comment on the ticket thread).
+- **Re-read the board**: `{VIBECTL} snapshot`
 
 {model_selection_instructions()}
 
-Worker dispatch (via the vibe API — it handles agent config; workers ALWAYS work in git worktrees, never in the main checkout. The vibe API provisions the worktree, appends its path to your prompt, and sets the conversation's workspace working_dir to the project so it files under the right workspace in the UI — always pass the PROJECT path as working_dir, never a worktree path):
-- **Start a worker conversation**:
-  `POST {VIBE_API}/api/manager/conversations` with JSON:
-  `{{"working_dir": "{WORKSPACE_PATH}", "prompt": "<self-contained task prompt>", "title": "🎫 <short task summary>", "llm_profile": "<model choice — see Model selection>"}}`
-  Response: `{{"id": "<conversation_id>", "conversation_url": ...}}` — immediately PATCH the id onto the ticket along with status in_progress.
-- **Send a follow-up message to an existing conversation** (same endpoint):
-  `{{"working_dir": "{WORKSPACE_PATH}", "prompt": "<message>", "conversation_id": "<conv_id>"}}`
+Worker dispatch — workers ALWAYS work in a git worktree, never in the main checkout. The worktree is provisioned for you, its path is appended to the worker's prompt, and the conversation is filed under the right workspace in the UI.
 
-Agent server API (read-only inspection): base `{AGENT_SERVER}`, header `X-Session-API-Key` (get the key with: `curl -s {VIBE_API}/api/manager/agent-credentials` → field `session_api_key`).
-- **Check a conversation**: `GET /api/conversations/<conv_id>?include_skills=false` → `execution_status` (running|idle|finished|error|stuck|paused).
-- **Read a worker's final report**: `GET /api/conversations/<conv_id>/agent_final_response`
+- **Start a worker**: `{VIBECTL} dispatch --prompt-file <file> --title "🎫 <short summary>" [--profile <model>]`
+  Write the task prompt to a file first (heredoc or the file editor) — do NOT try to pass a long multi-line prompt as a shell argument.
+  Prints `{{"id": "<conversation_id>", ...}}` — immediately patch that id onto the ticket along with `--status in_progress`.
+- **Follow up on an existing conversation**: `{VIBECTL} followup <conv_id> --prompt-file <file> [--profile <model>]`
+- **Inspect a conversation**: `{VIBECTL} conversation <conv_id> [--final-response]`
+  Prints `execution_status` (running|idle|finished|error|stuck|paused), the model, and optionally the worker's final report.
 
 ## Your job this run
 1. Read `AGENTS.md` in `{WORKSPACE_PATH}` (create it if missing) so you understand the project architecture. Keep it up to date: when finished tickets reveal new architecture/conventions, append concise notes so future workers benefit.
-2. For every ticket whose worker conversation just ended (conversation_status finished/idle but ticket still in_progress): read its final response. If it opened a PR, PATCH pr_url + status needs_input. In push-to-main mode verify the push landed on main and mark finished. If the worker failed or stalled (error/stuck), decide: send a corrective follow-up message, or mark needs_input with a concise append_entry asking the user for guidance.
-   - Conversely, if a ticket's conversation_status is **running** but the ticket is needs_input/finished/pending, the user likely resumed the agent manually (sent it a message directly). Set the ticket status back to in_progress (and clear a stale manager_note) so the board reflects that the agent is working again.
+2. For every ticket whose worker conversation just ended (conversation_status finished/idle but ticket still in_progress): read its final response. If it opened a PR, patch --pr-url and --status needs_input. In push-to-main mode verify the push landed on main and mark finished. If the worker failed or stalled (error/stuck), decide: send a corrective follow-up message, or mark needs_input with a concise append_entry asking the user for guidance.
+   - Conversely, if a ticket's conversation_status is **running** but the ticket is needs_input/finished/pending, the user likely resumed the agent manually (sent it a message directly). Set the ticket status back to in_progress (and clear a stale manager_note with `--manager-note ''`) so the board reflects that the agent is working again.
 3. For tickets with NEW user entries beyond dispatched_entry_count:
    - Only user/agent-authored entries count as new requests. If the entries beyond dispatched_entry_count are all manager comments (yours), there is nothing to relay — bump dispatched_entry_count to the current entry count so the board reads as fully dispatched, and move on.
    - If the ticket already has its OWN conversation, prefer **reusing it**: send the new request as a follow-up message to that conversation, bump dispatched_entry_count to the current entry count, and ensure status is in_progress.
@@ -514,24 +517,22 @@ Agent server API (read-only inspection): base `{AGENT_SERVER}`, header `X-Sessio
    - **Attachments**: tickets may carry file/image attachments (see each ticket's `attachments` array). Each has a stable absolute `path` on this machine, readable from worker worktrees. In the worker prompt, list every attachment as `<filename> (<content_type>) at <path>` and tell the worker to read/view it from that path (agents can view images with the file viewer). Workers must `cp` an attachment into their worktree only if it should become part of the repo. Never inline file contents into the prompt yourself.
 6. Update every card you acted on: status, conversation_id, manager_note, dispatched_entry_count, and append_entry comments where the user needs context. Every ticket you dispatch MUST get its conversation_id set so the card links to its conversation.
    - **Note style rule**: manager_note and append_entry are STATUS ONLY — a few words about what happened, NEVER a description of the task itself (the card already shows the task). Good: "Worker dispatched", "Landed 37d9ab on origin/master", "Worker restarted for fix", "PR open, awaiting review". Bad: anything summarizing or paraphrasing the feature/bug. Two exceptions: deferral notes keep their short reason (see the deferral contract), and a needs_input append_entry may contain the specific question the user must answer.
-7. **Title rule**: every ticket you touch that has a null `title` MUST get one via PATCH. Format: one emoji prefix + ONE or TWO words, NEVER more than two words (e.g. "🐛 Login fix", "🎨 Dark mode", "📎 Attachments"). Keep existing titles unless the ticket's scope clearly changed.
+7. **Title rule**: every ticket you touch that has a null `title` MUST get one via `patch --title`. Format: one emoji prefix + ONE or TWO words, NEVER more than two words (e.g. "🐛 Login fix", "🎨 Dark mode", "📎 Attachments"). Keep existing titles unless the ticket's scope clearly changed.
 8. Do not wait for workers to finish — dispatch and exit. You will be re-invoked automatically when statuses change.
 
 Be decisive and terse. When done, summarize what you dispatched/updated in one short final message."""
 
 
 def start_manager_conversation(prompt: str) -> str:
-    d = _request(
-        f"{VIBE_API}/api/manager/conversations", "POST",
-        {
-            "working_dir": WORKSPACE_PATH,
-            "prompt": prompt,
-            "worktree": False,  # the manager only reads/updates AGENTS.md; workers get worktrees
-            "title": f"🧠 Vibe Manager — {WORKSPACE_NAME} {time.strftime('%m-%d %H:%M')}",
-            "max_iterations": 200,
-            "role": "manager",
-        },
-        timeout=150,
+    d = vibestore.start_conversation(
+        WORKSPACE_PATH,
+        prompt,
+        title=f"🧠 Vibe Manager — {WORKSPACE_NAME} {time.strftime('%m-%d %H:%M')}",
+        role="manager",
+        # The manager only reads/updates AGENTS.md; workers get the worktrees.
+        worktree=False,
+        max_iterations=200,
+        ws_id=WORKSPACE_ID,
     )
     return d["id"]
 

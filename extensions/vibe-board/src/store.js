@@ -13,14 +13,14 @@
    single-user tool and the previous SQLite backend serialized these; see
    SCHEMA.md for why that trade is acceptable here. */
 
-export const STORE_ROOT = "/root/.openhands/vibe-manager";
+/* The store lives under the agent-server user's home. The file API needs
+   absolute paths and does not expand "~", so the home directory is resolved
+   once from GET /api/file/home rather than assuming /root — the agent server
+   may run as any user, and in a sandbox it usually does. */
+export const STORE_SUBPATH = ".openhands/vibe-manager";
 
 export const STATUSES = ["pending", "in_progress", "needs_input", "finished"];
 export const VERIFIED = "verified";
-
-const indexPath = () => `${STORE_ROOT}/index.json`;
-const boardPath = (wsId) => `${STORE_ROOT}/workspaces/${wsId}/board.json`;
-const attachmentDir = (attId) => `${STORE_ROOT}/attachments/${attId}`;
 
 export function newId() {
   const bytes = new Uint8Array(6);
@@ -65,8 +65,43 @@ export function resolveBackendCredentials(backendId) {
 }
 
 export class Store {
-  constructor(host) {
+  constructor(host, root = null) {
     this.host = host;
+    this.root = root;
+    this.rootPromise = null;
+  }
+
+  /** Absolute store root, resolved from the agent server's home dir once. */
+  async storeRoot() {
+    if (this.root) return this.root;
+    if (!this.rootPromise) {
+      this.rootPromise = this.host.agentServer
+        .request({ path: "/api/file/home" })
+        .then((res) => {
+          const home = (typeof res === "string" ? JSON.parse(res) : res)?.home;
+          if (!home) throw new Error("agent server did not report a home directory");
+          this.root = `${home.replace(/\/+$/, "")}/${STORE_SUBPATH}`;
+          return this.root;
+        })
+        .catch((err) => {
+          // Allow a later call to retry instead of caching the failure.
+          this.rootPromise = null;
+          throw err;
+        });
+    }
+    return this.rootPromise;
+  }
+
+  async indexPath() {
+    return `${await this.storeRoot()}/index.json`;
+  }
+
+  async boardPath(wsId) {
+    return `${await this.storeRoot()}/workspaces/${wsId}/board.json`;
+  }
+
+  async attachmentPath(attId, filename) {
+    return `${await this.storeRoot()}/attachments/${attId}/${filename}`;
   }
 
   /** Binary-safe download. See resolveBackendCredentials for why this exists. */
@@ -135,12 +170,12 @@ export class Store {
   // -------------------------------------------------------------- workspaces
 
   async readIndex() {
-    const idx = await this.readJson(indexPath(), { version: 1, workspaces: [] });
+    const idx = await this.readJson(await this.indexPath(), { version: 1, workspaces: [] });
     return idx && Array.isArray(idx.workspaces) ? idx : { version: 1, workspaces: [] };
   }
 
   async writeIndex(index) {
-    await this.writeJson(indexPath(), { ...index, version: 1 });
+    await this.writeJson(await this.indexPath(), { ...index, version: 1 });
   }
 
   /** Selected workspaces plus the candidates the agent server knows about. */
@@ -211,13 +246,15 @@ export class Store {
   // ------------------------------------------------------------------ boards
 
   async readBoard(wsId) {
-    const board = await this.readJson(boardPath(wsId), null);
+    const board = await this.readJson(await this.boardPath(wsId), null);
     if (!board) return { version: 1, workspace_id: wsId, tickets: [] };
     return { ...board, tickets: board.tickets || [] };
   }
 
   async writeBoard(wsId, board) {
-    await this.writeJson(boardPath(wsId), { ...board, version: 1, workspace_id: wsId });
+    await this.writeJson(await this.boardPath(wsId), {
+      ...board, version: 1, workspace_id: wsId,
+    });
   }
 
   /** Read, apply `mutate`, write back. Returns whatever `mutate` returns. */
@@ -315,7 +352,7 @@ export class Store {
   async addAttachment(wsId, ticketId, file) {
     const attId = newId();
     const filename = safeFilename(file.name);
-    const path = `${attachmentDir(attId)}/${filename}`;
+    const path = await this.attachmentPath(attId, filename);
     await this.writeFile(path, file, filename);
     return this.mutateBoard(wsId, (board) => {
       const ticket = board.tickets.find((t) => t.id === ticketId);
