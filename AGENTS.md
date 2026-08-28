@@ -407,6 +407,14 @@ file API — so there is nothing to configure and no second service to run:
   manager) lives in the automation: `automation/vibestore.py` +
   `automation/vibectl.py`, which must run in a completely bare environment.
 - Ticket text is in `entries[0].body`; there is no top-level `body` field.
+- **`/api/file/download` sends ETag/Last-Modified but no `Cache-Control`**, so
+  browsers heuristically cache it (~10% of the file's age). `readJson` defeats
+  this per read with a `_=<now>` param + `Cache-Control: no-cache`; keep it
+  that way. Without it the poll shows a stale board AND — because every write
+  is a read-modify-write via `mutateBoard` — a stale read silently destroys
+  the ticket created just before it. Attachment blobs are immutable and stay
+  cacheable. Note the store still has no locking, so this is only safe because
+  the board is single-user; concurrent writers would still lose updates.
 
 Operational notes for the extension:
 
