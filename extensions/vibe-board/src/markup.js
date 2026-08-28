@@ -39,16 +39,12 @@ export const BOARD_MARKUP = `
 <main id="main">
   <section id="api-setup" hidden>
     <div class="empty-inner">
-      <p class="eyebrow">Connect the board</p>
-      <h1>Where is the vibe-manager API?</h1>
-      <p class="empty-copy">This page is the vibe board running inside Canvas. It still needs the
-         vibe-manager service to read and write your tickets. Enter its base URL.</p>
-      <form id="api-setup-form" class="api-setup-form" autocomplete="off">
-        <input id="api-base-input" type="url" spellcheck="false"
-               aria-label="vibe-manager base URL" placeholder="https://vibe.apps.canvas.rbren.io">
-        <button type="submit">Connect</button>
-      </form>
+      <p class="eyebrow">Board unavailable</p>
+      <h1>Can't reach the agent server</h1>
+      <p class="empty-copy">The board is stored on the agent server this Canvas backend is
+         connected to, so it needs to be running.</p>
       <p class="api-setup-error" id="api-setup-error" hidden></p>
+      <button type="button" id="api-retry">Retry</button>
     </div>
   </section>
 

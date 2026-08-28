@@ -17,7 +17,8 @@
 */
 
 import { BOARD_MARKUP } from "./markup.js";
-import { VibeApi, loadSavedBase, normalizeBase, probeBase, saveBase } from "./api.js";
+import { Store } from "./store.js";
+import { Live } from "./live.js";
 
 const HOST_API_VERSION = "1";
 // Canvas routes extension pages at /extensions/<extension>/<declared page path>.
@@ -114,8 +115,6 @@ function shortModel(model) {
  * @returns {() => void} disposer that removes all DOM, timers and listeners.
  */
 export function mountBoard({ container, path, navigate, host }) {
-  const backendId = host?.backend?.id ?? "unknown";
-
   const root = document.createElement("div");
   root.className = "vibe-ext";
   root.innerHTML = BOARD_MARKUP;
@@ -142,8 +141,8 @@ export function mountBoard({ container, path, navigate, host }) {
   }
 
   const state = {
-    api: null,
-    apiBase: "",
+    store: new Store(host),
+    live: new Live(host),
     workspaces: { available: [], selected: [] },
     ws: null,
     tickets: [],
@@ -186,7 +185,7 @@ export function mountBoard({ container, path, navigate, host }) {
      checks this after awaiting. */
   const alive = () => !disposed;
 
-  /* ------------------------------------------------------------ api setup */
+  /* ----------------------------------------------------------- board store */
 
   function showSetup(message) {
     $("#api-setup").hidden = false;
@@ -199,49 +198,95 @@ export function mountBoard({ container, path, navigate, host }) {
     const err = $("#api-setup-error");
     err.hidden = !message;
     err.textContent = message || "";
-    $("#api-base-input").value = state.apiBase || "";
   }
 
-  async function connect(base, { persistBase = true } = {}) {
-    const normalized = normalizeBase(base);
-    if (!normalized) {
-      showSetup("That doesn't look like a URL.");
-      return false;
-    }
+  /** Open the store on this Canvas backend's agent server. */
+  async function connect() {
     try {
-      await probeBase(normalized);
+      // Resolving the root proves the file API is reachable and writable
+      // before the board starts polling it.
+      await state.store.storeRoot();
     } catch (e) {
       if (!alive()) return false;
       showSetup(
-        `Couldn't reach the vibe-manager API at ${normalized} (${e.message}). ` +
-          "Check the URL, and that the service allows this Canvas origin.",
+        `Couldn't reach the agent server's file API (${e.message}). ` +
+          "The board is stored on the agent server, so it needs to be running.",
       );
       return false;
     }
     if (!alive()) return false;
-    state.apiBase = normalized;
-    state.api = new VibeApi(normalized);
-    if (persistBase) saveBase(backendId, normalized);
     $("#api-setup").hidden = true;
     await start();
     return true;
   }
 
+  /* Conversations live in Canvas itself, so these route through the host
+     instead of opening a new tab. The href stays real for middle-click. */
+  function conversationLink(t, label) {
+    const a = document.createElement("a");
+    a.className = "chip convo";
+    a.href = t.conversation_url;
+    a.textContent = `↗ ${label}`;
+    a.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+      e.preventDefault();
+      navigate(t.conversation_url);
+    });
+    return a;
+  }
+
   /* --------------------------------------------------------- attachments */
+
+  /* Blob URLs are cached per attachment id: the board re-renders every 5s and
+     each render would otherwise re-download every visible image, and leak the
+     previous URL. Revoked wholesale on unmount. */
+  const blobUrls = new Map();
+  cleanups.push(() => {
+    for (const url of blobUrls.values()) URL.revokeObjectURL(url);
+    blobUrls.clear();
+  });
+
+  function objectUrl(a) {
+    let pending = blobUrls.get(a.id);
+    if (typeof pending === "string") return Promise.resolve(pending);
+    if (pending) return pending;
+    pending = state.store.attachmentUrl(a).then((url) => {
+      blobUrls.set(a.id, url);
+      return url;
+    }).catch((err) => {
+      blobUrls.delete(a.id); // let a later render retry
+      throw err;
+    });
+    blobUrls.set(a.id, pending);
+    return pending;
+  }
 
   function attachmentEl(a) {
     const link = document.createElement("a");
-    // Attachment URLs are API-relative; rebase them onto the vibe service.
-    link.href = state.api.url(a.url);
+    /* Attachment bytes live on the agent server's filesystem, which is only
+       readable with the session key — so there is no plain URL to point at.
+       The blob URL is fetched lazily and revoked on unmount. */
+    link.href = "#";
     link.target = "_blank";
     link.rel = "noopener";
     link.title = `${a.filename} · ${fmtSize(a.size)}`;
+    const load = () => objectUrl(a);
+    link.addEventListener("click", async (e) => {
+      e.preventDefault();
+      try {
+        window.open(await load(), "_blank", "noopener");
+      } catch (err) {
+        console.error("vibe: could not open attachment", err);
+      }
+    });
     if (isImage(a.content_type)) {
       link.className = "att att-thumb";
       const img = document.createElement("img");
-      img.src = state.api.url(a.url);
       img.alt = a.filename;
       img.loading = "lazy";
+      load().then((u) => { if (alive()) img.src = u; })
+        .catch((err) => console.error("vibe: could not load thumbnail", err));
       link.appendChild(img);
     } else {
       link.className = "att att-file";
@@ -257,7 +302,7 @@ export function mountBoard({ container, path, navigate, host }) {
   /* ---------------------------------------------------------- workspaces */
 
   async function loadWorkspaces() {
-    const data = await state.api.request("/api/workspaces");
+    const data = await state.store.listWorkspaces();
     if (!alive()) return;
     state.workspaces = data;
     const sel = $("#workspace-select");
@@ -334,10 +379,7 @@ export function mountBoard({ container, path, navigate, host }) {
       return;
     }
     try {
-      const ws = await state.api.request("/api/workspaces", {
-        method: "POST",
-        body: JSON.stringify({ path }),
-      });
+      const ws = await state.store.selectWorkspace(path);
       if (!alive()) return;
       state.ws = ws;
       state.automation = null;
@@ -360,10 +402,13 @@ export function mountBoard({ container, path, navigate, host }) {
   async function refreshBoard() {
     if (!state.ws) return;
     try {
-      const data = await state.api.request(`/api/workspaces/${state.ws.id}/board`);
+      const data = await state.store.getBoard(state.ws.id);
       if (!alive()) return;
       state.ws = data.workspace;
-      state.tickets = data.tickets;
+      /* The old service computed these server-side; inside Canvas they come
+         from the agent server directly, cached and refreshed in the
+         background so a 5s poll never blocks on them. */
+      state.tickets = state.live.decorate(data.tickets, "");
       renderBoard();
       renderSettings();
       if (state.drawerTicketId) renderDrawer();
@@ -392,7 +437,7 @@ export function mountBoard({ container, path, navigate, host }) {
   async function refreshAutomation() {
     if (!state.ws) return;
     try {
-      const data = await state.api.request(`/api/workspaces/${state.ws.id}/automation`);
+      const data = await state.live.automationStatus(state.ws);
       if (!alive()) return;
       state.automation = data;
     } catch (e) {
@@ -408,9 +453,7 @@ export function mountBoard({ container, path, navigate, host }) {
     badge.classList.add("triggering");
     $("#mgr-text").textContent = "manager: triggering…";
     try {
-      await state.api.request(`/api/workspaces/${state.ws.id}/automation/trigger`, {
-        method: "POST",
-      });
+      await state.live.triggerAutomation(state.ws);
     } catch (e) {
       if (alive()) console.error(`manager trigger failed: ${e.message}`);
     }
@@ -596,14 +639,7 @@ export function mountBoard({ container, path, navigate, host }) {
       meta.appendChild(chip);
     }
     if (t.conversation_url) {
-      const a = document.createElement("a");
-      a.className = "chip convo";
-      a.href = t.conversation_url;
-      a.target = "_blank";
-      a.rel = "noopener";
-      a.textContent = "↗ conversation";
-      a.addEventListener("click", (e) => e.stopPropagation());
-      meta.appendChild(a);
+      meta.appendChild(conversationLink(t, "conversation"));
     }
     if (t.pr_url) {
       const a = document.createElement("a");
@@ -717,10 +753,7 @@ export function mountBoard({ container, path, navigate, host }) {
     });
     renderBoard();
     try {
-      await state.api.request(`/api/workspaces/${state.ws.id}/reorder`, {
-        method: "POST",
-        body: JSON.stringify({ status, ordered_ids: ordered }),
-      });
+      await state.store.reorder(state.ws.id, status, ordered);
     } catch (e) {
       if (!alive()) return;
       console.error(`reorder failed: ${e.message}`);
@@ -737,10 +770,7 @@ export function mountBoard({ container, path, navigate, host }) {
     const btn = $("#new-ticket-submit");
     btn.disabled = true;
     try {
-      const ticket = await state.api.request(`/api/workspaces/${state.ws.id}/tickets`, {
-        method: "POST",
-        body: JSON.stringify({ body }),
-      });
+      const ticket = await state.store.createTicket(state.ws.id, { body });
       if (!alive()) return;
       ta.value = "";
       const files = state.newTicketFiles.splice(0);
@@ -748,7 +778,7 @@ export function mountBoard({ container, path, navigate, host }) {
       const failed = [];
       for (const f of files) {
         try {
-          await state.api.uploadAttachment(ticket.id, f);
+          await state.store.addAttachment(state.ws.id, ticket.id, f);
         } catch (e) {
           failed.push(e.message);
         }
@@ -791,7 +821,7 @@ export function mountBoard({ container, path, navigate, host }) {
     const failed = [];
     for (const f of files) {
       try {
-        await state.api.uploadAttachment(state.drawerTicketId, f);
+        await state.store.addAttachment(state.ws.id, state.drawerTicketId, f);
       } catch (e) {
         failed.push(e.message);
       }
@@ -803,7 +833,7 @@ export function mountBoard({ container, path, navigate, host }) {
 
   async function verifyTicket(id) {
     try {
-      await state.api.request(`/api/tickets/${id}/verify`, { method: "POST" });
+      await state.store.verifyTicket(state.ws.id, id);
       if (!alive()) return;
       await refreshBoard();
     } catch (e) {
@@ -860,13 +890,7 @@ export function mountBoard({ container, path, navigate, host }) {
     const links = $("#drawer-links");
     links.innerHTML = "";
     if (t.conversation_url) {
-      const a = document.createElement("a");
-      a.className = "chip convo";
-      a.href = t.conversation_url;
-      a.target = "_blank";
-      a.rel = "noopener";
-      a.textContent = "↗ open conversation";
-      links.appendChild(a);
+      links.appendChild(conversationLink(t, "open conversation"));
     }
     if (t.pr_url) {
       const a = document.createElement("a");
@@ -931,10 +955,7 @@ export function mountBoard({ container, path, navigate, host }) {
     const body = ta.value.trim();
     if (!body || !state.drawerTicketId) return;
     try {
-      await state.api.request(`/api/tickets/${state.drawerTicketId}/entries`, {
-        method: "POST",
-        body: JSON.stringify({ body }),
-      });
+      await state.store.appendEntry(state.ws.id, state.drawerTicketId, body);
       if (!alive()) return;
       ta.value = "";
       await refreshBoard();
@@ -948,10 +969,7 @@ export function mountBoard({ container, path, navigate, host }) {
   async function patchWorkspace(patch) {
     if (!state.ws) return;
     try {
-      const ws = await state.api.request(`/api/workspaces/${state.ws.id}`, {
-        method: "PATCH",
-        body: JSON.stringify(patch),
-      });
+      const ws = await state.store.updateWorkspace(state.ws.id, patch);
       if (!alive()) return;
       state.ws = ws;
       renderSettings();
@@ -982,10 +1000,7 @@ export function mountBoard({ container, path, navigate, host }) {
   }
 
   function wire() {
-    on($("#api-setup-form"), "submit", (e) => {
-      e.preventDefault();
-      connect($("#api-base-input").value);
-    });
+    on($("#api-retry"), "click", () => connect());
 
     on($("#workspace-select"), "change", (e) => selectWorkspace(e.target.value));
 
@@ -1067,16 +1082,10 @@ export function mountBoard({ container, path, navigate, host }) {
 
   wire();
 
-  const savedBase = loadSavedBase(backendId);
-  if (savedBase) {
-    // Don't re-persist: this base is already stored, and a failed probe should
-    // surface setup rather than silently rewriting the saved value. connect()
-    // renders the setup screen itself on failure, with the reason.
-    state.apiBase = savedBase;
-    connect(savedBase, { persistBase: false });
-  } else {
-    showSetup(null);
-  }
+  /* No configuration step: the board lives on the agent server this Canvas
+     backend is already connected to. connect() renders the setup screen
+     itself if the file API can't be reached, with the reason. */
+  connect();
 
   return () => {
     disposed = true;

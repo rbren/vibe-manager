@@ -80,29 +80,44 @@ function makeHost(overrides = {}) {
   };
 }
 
+/* The board reaches the agent server only through host.agentServer.request,
+   so a host whose request() is programmable is the whole seam. Returns the
+   host plus the recorded calls. */
+function hostWithStore({ home = "/home/tester", files = {}, workspaces = {} } = {}) {
+  const calls = [];
+  const disk = new Map(Object.entries(files));
+  const host = makeHost({
+    agentServer: {
+      async request({ path, method = "GET", body } = {}) {
+        calls.push({ path, method, body });
+        if (path === "/api/file/home") return { home };
+        if (path === "/api/workspaces") return workspaces;
+        if (path.startsWith("/api/file/download")) {
+          const target = decodeURIComponent(path.split("path=")[1] || "");
+          if (!disk.has(target)) {
+            const err = new Error(`404 not found: ${target}`);
+            err.status = 404;
+            throw err;
+          }
+          return disk.get(target);
+        }
+        if (path.startsWith("/api/file/upload")) {
+          const target = decodeURIComponent(path.split("path=")[1] || "");
+          disk.set(target, body);
+          return {};
+        }
+        return {};
+      },
+    },
+  });
+  return { host, calls, disk };
+}
+
 function makeContainer() {
   const el = dom.document.createElement("div");
   dom.document.body.appendChild(el);
   return el;
 }
-
-/** Swap in a fetch stub; returns the recorded calls. */
-function stubFetch(handler) {
-  const calls = [];
-  globalThis.fetch = async (url, opts = {}) => {
-    calls.push({ url: String(url), opts });
-    const result = await handler(String(url), opts);
-    return {
-      ok: result.ok !== false,
-      status: result.status ?? 200,
-      statusText: result.statusText ?? "OK",
-      json: async () => result.body ?? {},
-    };
-  };
-  return calls;
-}
-
-const EMPTY_WORKSPACES = { available: [], selected: [], canvas_base: "https://canvas.test" };
 
 describe("activate", () => {
   it("registers exactly the pages declared in the manifest", () => {
@@ -128,136 +143,107 @@ describe("activate", () => {
 });
 
 describe("mount", () => {
-  let originalFetch;
-  before(() => {
-    originalFetch = globalThis.fetch;
-  });
-  after(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  it("shows the API setup screen when no base URL is stored", () => {
+  it("needs no configuration: opens the store on the connected backend", async () => {
     dom.store.clear();
-    stubFetch(async () => ({ body: {} }));
+    const { host, calls } = hostWithStore();
     const container = makeContainer();
-    const dispose = mountBoard({
-      container,
-      path: "",
-      navigate: () => {},
-      host: makeHost(),
-    });
+    const dispose = mountBoard({ container, path: "", navigate: () => {}, host });
 
-    const setup = container.querySelector("#api-setup");
-    assert.ok(setup, "setup section rendered");
-    assert.equal(setup.hasAttribute("hidden"), false, "setup is visible");
+    await waitFor(() => calls.some((c) => c.path === "/api/workspaces"));
+
+    assert.equal(calls[0].path, "/api/file/home", "resolves the store root first");
     assert.equal(
-      container.querySelector("#board-wrap").hasAttribute("hidden"),
+      container.querySelector("#api-setup").hasAttribute("hidden"),
       true,
-      "board hidden until connected",
+      "no setup screen: there is nothing to configure",
     );
     dispose();
   });
 
-  it("probes health then loads workspaces from the configured base", async () => {
+  it("reads the board out of the agent server filesystem", async () => {
     dom.store.clear();
-    dom.store.set("vibe.ext.apiBase:test-backend", "https://vibe.example");
-    const calls = stubFetch(async (url) => {
-      if (url.endsWith("/api/health")) return { body: { ok: true } };
-      if (url.endsWith("/api/workspaces")) return { body: EMPTY_WORKSPACES };
-      return { body: {} };
+    const workspace = { id: "w1", name: "demo", path: "/git/demo", max_concurrent: 2 };
+    const home = "/home/tester";
+    const root = `${home}/.openhands/vibe-manager`;
+    const { host, calls } = hostWithStore({
+      home,
+      files: {
+        [`${root}/index.json`]: { workspaces: [workspace] },
+        [`${root}/workspaces/w1/board.json`]: {
+          tickets: [
+            {
+              id: "t1",
+              status: "pending",
+              entries: [{ id: "e1", author: "user", body: "hello", created_at: 1 }],
+            },
+          ],
+        },
+      },
     });
 
     const container = makeContainer();
-    const dispose = mountBoard({
-      container,
-      path: "",
-      navigate: () => {},
-      host: makeHost(),
-    });
+    const dispose = mountBoard({ container, path: "demo", navigate: () => {}, host });
 
-    await waitFor(() => calls.some((c) => c.url.endsWith("/api/workspaces")));
-
-    assert.equal(calls[0].url, "https://vibe.example/api/health");
-    const wsCall = calls.find((c) => c.url.endsWith("/api/workspaces"));
-    assert.ok(wsCall, "workspaces fetched");
-    assert.equal(wsCall.opts.credentials, "include", "sends credentials for basic auth");
+    await waitFor(() => container.textContent.includes("hello"));
+    assert.ok(
+      calls.some((c) => c.path.includes(encodeURIComponent(`${root}/workspaces/w1/board.json`))),
+      "board read from the store path under the resolved home",
+    );
     dispose();
   });
 
   it("renders all five lanes", async () => {
     dom.store.clear();
-    dom.store.set("vibe.ext.apiBase:test-backend", "https://vibe.example");
-    stubFetch(async (url) => {
-      if (url.endsWith("/api/health")) return { body: { ok: true } };
-      if (url.endsWith("/api/workspaces")) return { body: EMPTY_WORKSPACES };
-      return { body: {} };
-    });
+    const { host } = hostWithStore();
     const container = makeContainer();
-    const dispose = mountBoard({
-      container,
-      path: "",
-      navigate: () => {},
-      host: makeHost(),
-    });
+    const dispose = mountBoard({ container, path: "", navigate: () => {}, host });
     await waitFor(() => container.querySelector("#empty-state"));
     assert.equal(container.querySelectorAll(".col").length, 5);
     dispose();
   });
 
-  it("surfaces an unreachable API instead of failing silently", async () => {
+  it("surfaces an unreachable agent server instead of failing silently", async () => {
     dom.store.clear();
-    dom.store.set("vibe.ext.apiBase:test-backend", "https://vibe.example");
-    stubFetch(async () => ({ ok: false, status: 502, statusText: "Bad Gateway" }));
-    const container = makeContainer();
-    const dispose = mountBoard({
-      container,
-      path: "",
-      navigate: () => {},
-      host: makeHost(),
+    const host = makeHost({
+      agentServer: {
+        request: async () => {
+          throw new Error("502 Bad Gateway");
+        },
+      },
     });
+    const container = makeContainer();
+    const dispose = mountBoard({ container, path: "", navigate: () => {}, host });
 
     await waitFor(() => {
       const err = container.querySelector("#api-setup-error");
       return err && !err.hasAttribute("hidden");
     });
-    const err = container.querySelector("#api-setup-error");
-    assert.match(err.textContent, /Couldn't reach the vibe-manager API/);
+    assert.match(
+      container.querySelector("#api-setup-error").textContent,
+      /Couldn't reach the agent server/,
+    );
     dispose();
   });
 
-  it("tolerates a malformed board response without throwing", async () => {
+  it("tolerates a malformed board file without throwing", async () => {
     dom.store.clear();
-    dom.store.set("vibe.ext.apiBase:test-backend", "https://vibe.example");
-    stubFetch(async (url) => {
-      if (url.endsWith("/api/health")) return { body: { ok: true } };
-      if (url.endsWith("/api/workspaces")) return { body: { available: [], selected: [] } };
-      return { body: { nonsense: true } };
+    const home = "/home/tester";
+    const root = `${home}/.openhands/vibe-manager`;
+    const { host } = hostWithStore({
+      home,
+      files: { [`${root}/index.json`]: { nonsense: true } },
     });
     const container = makeContainer();
-    const dispose = mountBoard({
-      container,
-      path: "",
-      navigate: () => {},
-      host: makeHost(),
-    });
+    const dispose = mountBoard({ container, path: "", navigate: () => {}, host });
     await waitFor(() => container.querySelector("#workspace-select"));
     dispose();
   });
 
   it("disposer removes all DOM and stops polling", async () => {
     dom.store.clear();
-    dom.store.set("vibe.ext.apiBase:test-backend", "https://vibe.example");
-    const calls = stubFetch(async (url) => {
-      if (url.endsWith("/api/health")) return { body: { ok: true } };
-      return { body: EMPTY_WORKSPACES };
-    });
+    const { host, calls } = hostWithStore();
     const container = makeContainer();
-    const dispose = mountBoard({
-      container,
-      path: "",
-      navigate: () => {},
-      host: makeHost(),
-    });
+    const dispose = mountBoard({ container, path: "", navigate: () => {}, host });
     await waitFor(() => calls.length > 0);
 
     dispose();
@@ -270,11 +256,14 @@ describe("mount", () => {
 
   it("removes its stylesheet only when the last mount is disposed", () => {
     dom.store.clear();
-    stubFetch(async () => ({ body: {} }));
     const a = makeContainer();
     const b = makeContainer();
-    const disposeA = mountBoard({ container: a, path: "", navigate: () => {}, host: makeHost() });
-    const disposeB = mountBoard({ container: b, path: "", navigate: () => {}, host: makeHost() });
+    const disposeA = mountBoard({
+      container: a, path: "", navigate: () => {}, host: hostWithStore().host,
+    });
+    const disposeB = mountBoard({
+      container: b, path: "", navigate: () => {}, host: hostWithStore().host,
+    });
 
     assert.ok(dom.document.getElementById("vibe-ext-style"), "style injected");
     disposeA();
@@ -293,13 +282,12 @@ describe("mount", () => {
   it("scopes the light theme to its own root, never the host document", () => {
     dom.store.clear();
     dom.store.set("vibe.theme", "light");
-    stubFetch(async () => ({ body: {} }));
     const container = makeContainer();
     const dispose = mountBoard({
       container,
       path: "",
       navigate: () => {},
-      host: makeHost(),
+      host: hostWithStore().host,
     });
     const root = container.querySelector(".vibe-ext");
     assert.equal(root.getAttribute("data-theme"), "light");
@@ -313,7 +301,8 @@ describe("mount", () => {
 
   it("treats the route remainder as the workspace name", async () => {
     dom.store.clear();
-    dom.store.set("vibe.ext.apiBase:test-backend", "https://vibe.example");
+    const home = "/home/tester";
+    const root = `${home}/.openhands/vibe-manager`;
     const workspace = {
       id: "w1",
       name: "demo",
@@ -321,26 +310,21 @@ describe("mount", () => {
       max_concurrent: 3,
       push_mode: "main",
     };
-    const calls = stubFetch(async (url, opts) => {
-      if (url.endsWith("/api/health")) return { body: { ok: true } };
-      if (url.endsWith("/api/workspaces") && opts.method === "POST") return { body: workspace };
-      if (url.endsWith("/api/workspaces"))
-        return { body: { available: [], selected: [workspace] } };
-      if (url.includes("/board")) return { body: { workspace, tickets: [] } };
-      return { body: {} };
+    const { host, calls } = hostWithStore({
+      home,
+      files: {
+        [`${root}/index.json`]: { workspaces: [workspace] },
+        [`${root}/workspaces/w1/board.json`]: { tickets: [] },
+      },
     });
 
     const container = makeContainer();
-    const dispose = mountBoard({
-      container,
-      path: "demo",
-      navigate: () => {},
-      host: makeHost(),
-    });
+    const dispose = mountBoard({ container, path: "demo", navigate: () => {}, host });
 
-    await waitFor(() => calls.some((c) => c.url.includes("/board")));
-    const post = calls.find((c) => c.opts.method === "POST");
-    assert.equal(JSON.parse(post.opts.body).path, "/git/demo");
+    // Resolving the name to w1 and reading that board is the whole behaviour.
+    await waitFor(() =>
+      calls.some((c) => c.path.includes(encodeURIComponent(`${root}/workspaces/w1/board.json`))),
+    );
     dispose();
   });
 });
