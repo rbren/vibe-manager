@@ -233,7 +233,8 @@ var Store = class {
     let raw;
     try {
       raw = await this.host.agentServer.request({
-        path: `/api/file/download?path=${encodeURIComponent(path)}`
+        path: `/api/file/download?path=${encodeURIComponent(path)}&_=${Date.now()}`,
+        headers: { "Cache-Control": "no-cache" }
       });
     } catch (err) {
       if (fallback !== void 0 && isNotFound(err)) return fallback;

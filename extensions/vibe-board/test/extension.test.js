@@ -83,6 +83,12 @@ function makeHost(overrides = {}) {
 /* The board reaches the agent server only through host.agentServer.request,
    so a host whose request() is programmable is the whole seam. Returns the
    host plus the recorded calls. */
+/* Reads use a cache-busting `_` param, so pull `path` out of the query
+   properly rather than splitting on "path=". */
+function filePath(url) {
+  return new URL(url, "http://x").searchParams.get("path") || "";
+}
+
 function hostWithStore({ home = "/home/tester", files = {}, workspaces = {} } = {}) {
   const calls = [];
   const disk = new Map(Object.entries(files));
@@ -93,7 +99,7 @@ function hostWithStore({ home = "/home/tester", files = {}, workspaces = {} } = 
         if (path === "/api/file/home") return { home };
         if (path === "/api/workspaces") return workspaces;
         if (path.startsWith("/api/file/download")) {
-          const target = decodeURIComponent(path.split("path=")[1] || "");
+          const target = filePath(path);
           if (!disk.has(target)) {
             const err = new Error(`404 not found: ${target}`);
             err.status = 404;
@@ -106,7 +112,7 @@ function hostWithStore({ home = "/home/tester", files = {}, workspaces = {} } = 
           /* The real endpoint takes multipart and stores the file's bytes, so
              unwrap the FormData the store sends and keep parsed JSON on the
              fake disk (which is what download hands back). */
-          const target = decodeURIComponent(path.split("path=")[1] || "");
+          const target = filePath(path);
           const file = body instanceof FormData ? body.get("file") : null;
           disk.set(target, file ? JSON.parse(await file.text()) : body);
           return {};

@@ -127,8 +127,14 @@ export class Store {
   async readJson(path, fallback) {
     let raw;
     try {
+      /* The file API sends ETag/Last-Modified but no Cache-Control, so the
+         browser is free to reuse a stale board for its heuristic freshness
+         window. That stalls the poll and, because every write is a
+         read-modify-write, lets a stale read drop the previous ticket. Defeat
+         it per read; attachments stay cacheable, they never change. */
       raw = await this.host.agentServer.request({
-        path: `/api/file/download?path=${encodeURIComponent(path)}`,
+        path: `/api/file/download?path=${encodeURIComponent(path)}&_=${Date.now()}`,
+        headers: { "Cache-Control": "no-cache" },
       });
     } catch (err) {
       // A missing document is an expected state (no workspaces onboarded yet,

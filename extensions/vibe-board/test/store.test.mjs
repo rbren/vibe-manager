@@ -278,3 +278,40 @@ test("binary attachment bytes round-trip without corruption", async () => {
   const got = new Uint8Array(await res.arrayBuffer());
   assert.deepEqual([...got], [...bytes], "binary bytes are preserved");
 });
+
+
+/* The file API sends ETag/Last-Modified but no Cache-Control, so a browser may
+   reuse a stale board within its heuristic freshness window. Because every
+   write is a read-modify-write, a stale read silently drops the previously
+   created ticket. Reproduced with a host that caches by URL, like a browser. */
+test("a caching client cannot lose a ticket between writes", async () => {
+  const real = makeHost();
+  const cache = new Map();
+  let served = 0;
+  const caching = {
+    agentServer: {
+      async request(opts) {
+        const isRead = (opts.method || "GET") === "GET";
+        if (isRead && cache.has(opts.path)) {
+          served++;
+          return cache.get(opts.path);
+        }
+        const res = await real.agentServer.request(opts);
+        if (isRead) cache.set(opts.path, res);
+        return res;
+      },
+    },
+  };
+
+  const store = new Store(caching);
+  const ws = await store.selectWorkspace(`/git/cache-${newId()}`);
+
+  await store.createTicket(ws.id, "first");
+  await store.createTicket(ws.id, "second");
+
+  // Read through a non-caching store so this asserts what is on disk.
+  const { tickets } = await new Store(real).getBoard(ws.id);
+  const bodies = tickets.map((t) => t.entries[0].body).sort();
+  assert.deepEqual(bodies, ["first", "second"], "neither write clobbered the other");
+  assert.equal(served, 0, "board reads bypass the cache");
+});
