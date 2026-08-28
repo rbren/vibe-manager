@@ -388,9 +388,25 @@ via /etc/nginx/.htpasswd).
 ## Canvas Extensions
 
 The board now also ships as a Canvas Extension in `extensions/vibe-board`
-(see that package's README). It is **frontend only** — it renders the SPA
-inside Canvas and still calls this repo's FastAPI service for all data. The
-research below is why it is built that way; it remains accurate.
+(see that package's README). Canvas extensions are **frontend only** (host
+API = `registerPage` / `navigate` / `agentServer.request`; no extension-owned
+server code), which is why the FastAPI service could not come along.
+
+**The extension no longer talks to app.py at all.** Board state is JSON on
+disk under `~/.openhands/vibe-manager/` (`index.json` +
+`workspaces/<id>/board.json`), read and written through the agent server's
+file API — so there is nothing to configure and no second service to run:
+
+- `src/store.js` (`Store`) owns all reads/writes. It resolves the store root
+  at runtime from `GET /api/file/home` (field is **`home`**) — never hardcode
+  `/root`. Paths: `<home>/.openhands/vibe-manager/workspaces/<id>/board.json`.
+- `src/live.js` (`Live`) decorates tickets with `latest_action` / `llm_model`
+  and builds `conversation_url` as an **in-app relative** `/conversations/<id>`;
+  the UI routes those through the host's `navigate` rather than a new tab.
+- Shell-only work (dispatch, git worktrees, mutating the store from the
+  manager) lives in the automation: `automation/vibestore.py` +
+  `automation/vibectl.py`, which must run in a completely bare environment.
+- Ticket text is in `entries[0].body`; there is no top-level `body` field.
 
 Operational notes for the extension:
 
@@ -409,13 +425,23 @@ Operational notes for the extension:
   selectors — if you add a global selector to style.css, expect it to fail.
 - `static/index.html`'s body is duplicated in `extensions/vibe-board/src/markup.js`.
   **Change both.**
-- The extension is cross-origin, so `app.py` now sends CORS headers for
-  `VIBE_CORS_ORIGINS` (defaults to `VIBE_CANVAS_BASE` + localhost) with
-  credentials enabled so nginx basic auth rides along.
+- No CORS is involved any more: every request goes through the host's
+  `agentServer.request`, same-origin with Canvas.
 - Install: `POST /api/canvas-extensions/install {"source": "<abs path>"}`
   (add `"force": true` to reinstall). Installs always land **disabled**;
   enable from Customize → Extensions. Bundle is served at
-  `/api/canvas-extensions/installed/<name>/bundle`.
+  `/api/canvas-extensions/installed/<name>/bundle`. These endpoints live on
+  the **agent server** (18000, `X-Session-API-Key`), not the Canvas static
+  server — the ingress rejects the agent-server key on its own routes.
+  Verify a deploy by diffing the served bundle against `dist/extension.js`.
+- Page route is `/extensions/<extension-name>/<page path>`, e.g.
+  `/extensions/vibe-board/board` — NOT the bare `/board` from the manifest.
+- Testing the bundle under linkedom: it has no setter for
+  `HTMLSelectElement.value`, so `installDom()` adds one; without it the mount
+  throws and the board silently never renders. Drive tests through a
+  programmable `host.agentServer.request` double (see `hostWithStore`) and
+  keep fixtures in the real payload shapes — a wrong fixture here looks
+  exactly like a product bug.
 - The agent-server manifest schema has no `nav_label`/`description` on pages
   and silently drops them; the frontend falls back to `title`.
 
