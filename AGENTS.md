@@ -384,3 +384,92 @@ via /etc/nginx/.htpasswd).
 - Text sizing (cf7840e, 2026-05): `static/style.css` sets `html { font-size:
   120%; }` and all font-sizes are in `rem` (base 16px). Change the root
   percentage to rescale all text; keep new font-size declarations in rem.
+
+## Canvas Extensions
+
+The board now also ships as a Canvas Extension in `extensions/vibe-board`
+(see that package's README). It is **frontend only** — it renders the SPA
+inside Canvas and still calls this repo's FastAPI service for all data. The
+research below is why it is built that way; it remains accurate.
+
+Operational notes for the extension:
+
+- **Build tooling lives in `extensions/`, one level ABOVE `vibe-board/`.**
+  Installing from a local path copies the package directory verbatim, so a
+  `node_modules/` inside `vibe-board/` lands in the agent-server install
+  (38 MB vs 164 KB — this was hit and fixed). `cd extensions && npm test`.
+- `extensions/vibe-board/dist/extension.js` is **committed**: the agent-server
+  installs by copying files and never runs a build.
+- `static/style.css` stays the single source of truth. `build.mjs` scopes every
+  selector under `.vibe-ext` and rewrites `html`/`:root`/`body` and
+  `html[data-theme="light"]` onto that root, so the extension can't restyle
+  Canvas. It also rewrites every `rem` to `calc(N * var(--vibe-rem))` with
+  `--vibe-rem: 1.2rem`, replacing the SPA's `html { font-size: 120% }` (an
+  extension must not resize the host page). A test asserts 0 unscoped
+  selectors — if you add a global selector to style.css, expect it to fail.
+- `static/index.html`'s body is duplicated in `extensions/vibe-board/src/markup.js`.
+  **Change both.**
+- The extension is cross-origin, so `app.py` now sends CORS headers for
+  `VIBE_CORS_ORIGINS` (defaults to `VIBE_CANVAS_BASE` + localhost) with
+  credentials enabled so nginx basic auth rides along.
+- Install: `POST /api/canvas-extensions/install {"source": "<abs path>"}`
+  (add `"force": true` to reinstall). Installs always land **disabled**;
+  enable from Customize → Extensions. Bundle is served at
+  `/api/canvas-extensions/installed/<name>/bundle`.
+- The agent-server manifest schema has no `nav_label`/`description` on pages
+  and silently drops them; the frontend falls back to `title`.
+
+## Canvas Extensions research (2026-05-21)
+
+Investigated converting vibe-manager into a Canvas Extension (openhands
+v1.16.0 `feat: land the Canvas Extensions frontend`, 89dc8bd44). Findings,
+verified against source + live API probes on this host:
+
+- **The extension contract**: manifest `canvas-extension.json` (schema_version
+  1) + ONE self-contained browser ESM bundle exporting `activate(host)`. Spec:
+  `openhands/specs/canvas-extensions.md`; types:
+  `openhands/src/types/canvas-extension.ts`; runtime:
+  `src/components/features/canvas-extensions/canvas-extensions-runtime.tsx`.
+  Backend side lives in software-agent-sdk
+  (`canvas_extensions_router.py` + `canvas_extensions/installed.py`),
+  installed under `~/.openhands/canvas-extensions/installed/<name>`.
+- **Extensions are FRONTEND-ONLY.** The host API is just `registerPage`,
+  `navigate`, and `agentServer.request({method, path, body})`. There is NO
+  hook to run extension-owned server code, so vibe-manager's FastAPI process
+  cannot come along; its logic must move into the bundle or the automation.
+- **`agentServer.request` only reaches the agent-server**, and only
+  root-relative paths (it throws on non-`/` and on `//`). It is NOT a generic
+  proxy — the automation backend is a *separate* service, so the extension
+  must call `/api/automation/...` with its own `fetch` (works here because the
+  ingress on :8000 routes `/api/automation/*` to :18001 and the agent-server
+  and automation share one session key — verified: both keys are identical and
+  both return 200).
+- **There is no KV/database in the agent-server.** Its only persistence is
+  purpose-built file stores (`persistence/store.py`:
+  settings/secrets/workspaces/profiles) — no generic key-value endpoint
+  (`git grep` for kv/extension_state finds nothing).
+- **The automation KV store cannot serve as the extension's database.** It
+  exists (`openhands/automation/kv_router.py`, `/v1/kv/...`, Redis-like
+  get/put/patch/incr/lpush) but auth is a per-RUN JWT (`AUTOMATION_KV_TOKEN`,
+  minted only by `dispatcher.py` when a run starts). A session key is rejected
+  (verified: 422 / "Invalid token: Not enough segments"), so the browser can
+  never read it. It is also a single encrypted JSON doc per automation with a
+  64 KB default value cap — our dj-station board alone is ~87 KB of JSON.
+- **The file API is the viable native backend.** Verified working with the
+  session key: `POST /api/file/upload?path=` (multipart, absolute path),
+  `GET /api/file/download?path=` (404 on missing), `POST
+  /api/file/create_directory?path=`, and `GET /api/file/search_subdirs?path=`
+  — the last one gives *enumeration*, so a directory-per-record layout
+  (`.../tickets/<id>/record.json`) is listable without an index file.
+  Gaps: there is no delete and no rename in the file API, and upload
+  truncates-then-streams (not atomic). Both are covered by
+  `POST /api/bash/execute_bash_command` (verified: `mv` round-trips in ~0.2 s;
+  the first call after an idle period takes ~60 s to warm up, so don't put a
+  cold bash call on a UI-blocking path).
+- **Data is small enough for JSON on disk**: 3 workspaces / 109 tickets /
+  203 entries; largest single board is ~87 KB of JSON. Single-user, so
+  read-modify-write of a per-workspace document is fine; use write-temp +
+  `mv` via the bash API for atomicity.
+- The automation half of vibe-manager (`automation/main.py`) needs almost no
+  change: it already runs server-side with a KV token and can keep using its
+  own KV state, and it can read/write the same board JSON through the file API.

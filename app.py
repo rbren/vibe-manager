@@ -26,6 +26,7 @@ from pathlib import Path
 import httpx
 import websockets
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -51,6 +52,24 @@ STATUSES = ["pending", "in_progress", "needs_input", "finished"]
 VERIFIED = "verified"
 
 app = FastAPI(title="Vibe Work Manager")
+
+# The Canvas Extension build of the SPA (extensions/vibe-board) runs on the
+# Canvas origin, so its API calls are cross-origin. Allow only the Canvas
+# origins, and allow credentials so nginx basic auth rides along.
+CORS_ORIGINS = [
+    o.strip()
+    for o in os.environ.get(
+        "VIBE_CORS_ORIGINS", f"{CANVAS_BASE},http://localhost:8000,http://127.0.0.1:8000"
+    ).split(",")
+    if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type"],
+)
 
 
 # --------------------------------------------------------------------------- db

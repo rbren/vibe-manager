@@ -1,0 +1,19 @@
+{
+  "name": "vibe-canvas-extensions",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Build tooling for the vibe Agent Canvas extensions.",
+  "comment": "Dependencies live here, one level ABOVE each extension package root: installing an extension from a local path copies that directory verbatim, so a node_modules inside vibe-board/ would land in the agent-server install (38 MB of build-only deps).",
+  "scripts": {
+    "build": "node vibe-board/build.mjs",
+    "test": "npm run build && node --test vibe-board/test/*.test.js",
+    "validate": "npm run build && node validate-extension.mjs vibe-board"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "linkedom": "^0.18.0",
+    "postcss": "^8.4.0",
+    "postcss-prefix-selector": "^2.1.0"
+  }
+}
