@@ -101,9 +101,14 @@ function hostWithStore({ home = "/home/tester", files = {}, workspaces = {} } = 
           }
           return disk.get(target);
         }
+        if (path.startsWith("/api/file/create_directory")) return {};
         if (path.startsWith("/api/file/upload")) {
+          /* The real endpoint takes multipart and stores the file's bytes, so
+             unwrap the FormData the store sends and keep parsed JSON on the
+             fake disk (which is what download hands back). */
           const target = decodeURIComponent(path.split("path=")[1] || "");
-          disk.set(target, body);
+          const file = body instanceof FormData ? body.get("file") : null;
+          disk.set(target, file ? JSON.parse(await file.text()) : body);
           return {};
         }
         return {};
@@ -326,6 +331,95 @@ describe("mount", () => {
       calls.some((c) => c.path.includes(encodeURIComponent(`${root}/workspaces/w1/board.json`))),
     );
     dispose();
+  });
+
+  /* Submitting is the one path that writes. It regressed silently once
+     (the composer passed {body} where the store wanted a string), so these
+     assert the ticket actually lands in the store, not just that a handler
+     ran. */
+  describe("submitting a new request", () => {
+    const home = "/home/tester";
+    const root = `${home}/.openhands/vibe-manager`;
+    const boardPath = `${root}/workspaces/w1/board.json`;
+    const workspace = { id: "w1", name: "demo", path: "/git/demo", max_concurrent: 2 };
+
+    async function mountWithComposer() {
+      dom.store.clear();
+      const ctx = hostWithStore({
+        home,
+        files: {
+          [`${root}/index.json`]: { workspaces: [workspace] },
+          [boardPath]: { version: 1, workspace_id: "w1", tickets: [] },
+        },
+      });
+      const container = makeContainer();
+      const dispose = mountBoard({ container, path: "demo", navigate: () => {}, host: ctx.host });
+      /* The composer is in the initial markup, so waiting for it would race
+         the workspace lookup and submit into a board that isn't open yet. */
+      await waitFor(() =>
+        ctx.calls.some((c) => c.path.includes(encodeURIComponent(boardPath))),
+      );
+      return { ...ctx, container, dispose };
+    }
+
+    const written = (disk) => disk.get(boardPath).tickets;
+
+    /* linkedom has no KeyboardEvent constructor, so carry the fields the
+       handler actually reads on a plain Event. */
+    function keydown(key, props = {}) {
+      const e = new dom.window.Event("keydown", { bubbles: true, cancelable: true });
+      Object.assign(e, { key, shiftKey: false, metaKey: false, ctrlKey: false, ...props });
+      return e;
+    }
+
+    it("creates the ticket when the form is submitted", async () => {
+      const { container, disk, dispose } = await mountWithComposer();
+      container.querySelector("#new-ticket-body").value = "ship it";
+      container.querySelector("#new-ticket-form").dispatchEvent(
+        new dom.window.Event("submit", { bubbles: true, cancelable: true }),
+      );
+
+      await waitFor(() => written(disk).length === 1);
+      const [ticket] = written(disk);
+      assert.equal(ticket.status, "pending");
+      assert.equal(ticket.entries[0].body, "ship it", "body survives the round trip");
+      assert.equal(ticket.entries[0].author, "user");
+      dispose();
+    });
+
+    it("creates the ticket when Enter is pressed in the composer", async () => {
+      const { container, disk, dispose } = await mountWithComposer();
+      const ta = container.querySelector("#new-ticket-body");
+      ta.value = "via enter";
+      ta.dispatchEvent(keydown("Enter"));
+
+      await waitFor(() => written(disk).length === 1);
+      assert.equal(written(disk)[0].entries[0].body, "via enter");
+      dispose();
+    });
+
+    it("leaves Shift+Enter to insert a newline", async () => {
+      const { container, disk, dispose } = await mountWithComposer();
+      const ta = container.querySelector("#new-ticket-body");
+      ta.value = "not yet";
+      ta.dispatchEvent(keydown("Enter", { shiftKey: true }));
+
+      await sleep(80);
+      assert.equal(written(disk).length, 0, "no ticket written");
+      dispose();
+    });
+
+    it("ignores an empty composer", async () => {
+      const { container, disk, dispose } = await mountWithComposer();
+      container.querySelector("#new-ticket-body").value = "   ";
+      container.querySelector("#new-ticket-form").dispatchEvent(
+        new dom.window.Event("submit", { bubbles: true, cancelable: true }),
+      );
+
+      await sleep(80);
+      assert.equal(written(disk).length, 0, "whitespace is not a request");
+      dispose();
+    });
   });
 });
 

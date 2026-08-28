@@ -770,7 +770,7 @@ export function mountBoard({ container, path, navigate, host }) {
     const btn = $("#new-ticket-submit");
     btn.disabled = true;
     try {
-      const ticket = await state.store.createTicket(state.ws.id, { body });
+      const ticket = await state.store.createTicket(state.ws.id, body);
       if (!alive()) return;
       ta.value = "";
       const files = state.newTicketFiles.splice(0);
