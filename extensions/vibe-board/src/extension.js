@@ -401,9 +401,14 @@ export function mountBoard({ container, path, navigate, host }) {
 
   async function refreshBoard() {
     if (!state.ws) return;
+    /* A poll reads the board every 5s, so one is often in flight while the
+       user submits. Its response was captured before the write and would
+       render the board without the new card; the write does its own refresh,
+       so drop anything read across a write instead. */
+    const writes = state.store.writes;
     try {
       const data = await state.store.getBoard(state.ws.id);
-      if (!alive()) return;
+      if (!alive() || state.store.writes !== writes) return;
       state.ws = data.workspace;
       /* The old service computed these server-side; inside Canvas they come
          from the agent server directly, cached and refreshed in the

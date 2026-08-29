@@ -413,8 +413,25 @@ file API — so there is nothing to configure and no second service to run:
   that way. Without it the poll shows a stale board AND — because every write
   is a read-modify-write via `mutateBoard` — a stale read silently destroys
   the ticket created just before it. Attachment blobs are immutable and stay
-  cacheable. Note the store still has no locking, so this is only safe because
-  the board is single-user; concurrent writers would still lose updates.
+  cacheable.
+- **Every write is a read-modify-write of the whole document, so writes are
+  serialized** (`Store.serialize`, a promise chain; `mutateBoard`,
+  `selectWorkspace` and `updateWorkspace` run through it). Two cycles in
+  flight at once — a second submit, an attachment upload, a drag-reorder —
+  used to have the later one download the board from before the earlier
+  upload and write that copy back, dropping the ticket just created (ticket
+  3f191ab9a7ff, "cards dont always show up in pending"): three concurrent
+  `createTicket` calls left ONE ticket on disk. There is no compare-and-set
+  in the file API, so not overlapping them is the fix; anything a mutation
+  calls must therefore NOT call `serialize` again (`readBoard`/`writeBoard`/
+  `readIndex`/`writeIndex` are deliberately unserialized). Cross-process
+  writers (the automation's `vibestore.py`) are still unprotected — its
+  read-modify-write window is sub-millisecond and atomic (write-temp + rename),
+  the browser's is a whole HTTP round trip.
+- **A board read that spans a write is discarded** (`refreshBoard` compares
+  `store.writes` before/after): the 5s poll is usually in flight when the user
+  submits, and that response predates the new ticket, so rendering it hides
+  the card until the next poll. The write path does its own refresh.
 - **`bin/config.json` is shared by ALL workspaces** (`workspace_id`,
   `workspace_path`, `store_dir`) and is rewritten on every workspace
   bootstrap/refresh, so `vibectl.py`'s implicit workspace defaults are racy:

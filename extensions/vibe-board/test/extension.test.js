@@ -89,7 +89,14 @@ function filePath(url) {
   return new URL(url, "http://x").searchParams.get("path") || "";
 }
 
-function hostWithStore({ home = "/home/tester", files = {}, workspaces = {} } = {}) {
+function hostWithStore({
+  home = "/home/tester",
+  files = {},
+  workspaces = {},
+  /* Awaited before a download is served, so a test can hold a read open and
+     make a response land after something else happened. */
+  beforeRead = null,
+} = {}) {
   const calls = [];
   const disk = new Map(Object.entries(files));
   const host = makeHost({
@@ -105,7 +112,13 @@ function hostWithStore({ home = "/home/tester", files = {}, workspaces = {} } = 
             err.status = 404;
             throw err;
           }
-          return disk.get(target);
+          /* A real response carries the bytes as they were when it was
+             served, so snapshot before yielding: a caller must not see a
+             later write through the object it read, and a held read must
+             answer with what the file said when it was requested. */
+          const served = structuredClone(disk.get(target));
+          if (beforeRead) await beforeRead(target);
+          return served;
         }
         if (path.startsWith("/api/file/create_directory")) return {};
         if (path.startsWith("/api/file/upload")) {
@@ -425,6 +438,52 @@ describe("mount", () => {
       await sleep(80);
       assert.equal(written(disk).length, 0, "whitespace is not a request");
       dispose();
+    });
+
+    /* The board is polled every 5s, so a read is usually in flight when the
+       user submits. That response was captured before the ticket existed, and
+       rendering it drops the brand new card out of pending until the next
+       poll — the "cards don't always show up" report. */
+    it("keeps the new card when a read from before it lands late", async () => {
+      dom.store.clear();
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      let boardReads = 0;
+      const ctx = hostWithStore({
+        home,
+        files: {
+          [`${root}/index.json`]: { workspaces: [workspace] },
+          [boardPath]: { version: 1, workspace_id: "w1", tickets: [] },
+        },
+        beforeRead: async (target) => {
+          if (target === boardPath && ++boardReads === 1) await held;
+        },
+      });
+      const container = makeContainer();
+      const dispose = mountBoard({
+        container, path: "demo", navigate: () => {}, host: ctx.host,
+      });
+
+      try {
+        await waitFor(() => boardReads >= 1);
+        container.querySelector("#new-ticket-body").value = "ship it";
+        container.querySelector("#new-ticket-form").dispatchEvent(
+          new dom.window.Event("submit", { bubbles: true, cancelable: true }),
+        );
+
+        const pending = () =>
+          container.querySelector('.col-cards[data-status="pending"]').textContent;
+        await waitFor(() => written(ctx.disk).length === 1);
+        await waitFor(() => pending().includes("ship it"));
+
+        release();
+        await sleep(80);
+        assert.match(pending(), /ship it/, "the card is still in pending");
+      } finally {
+        // Without this a failure leaves the poll timer holding the runner open.
+        release();
+        dispose();
+      }
     });
   });
 });

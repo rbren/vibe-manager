@@ -69,6 +69,28 @@ export class Store {
     this.host = host;
     this.root = root;
     this.rootPromise = null;
+    this.mutationChain = Promise.resolve();
+    /* Completed board writes. The UI reads this to tell a poll response that
+       predates a local write from one that reflects it. */
+    this.writes = 0;
+  }
+
+  /* Run a read-modify-write cycle with no other cycle in flight.
+
+     A cycle is a download, an in-memory edit and an upload of the whole
+     document, which takes long enough that a second one started meanwhile
+     (a second submit, an attachment, a drag-reorder) downloads the document
+     from *before* the first upload and then writes that stale copy back —
+     silently dropping the ticket just created. There is no compare-and-set in
+     the file API, so the only fix on this side is not to overlap them.
+
+     `fn` must not call `serialize` again; the helpers it uses (readBoard,
+     writeBoard, readIndex, writeIndex) are deliberately unserialized. */
+  serialize(fn) {
+    const done = this.mutationChain.then(fn);
+    // A rejected cycle must not poison the queue, nor look unhandled here.
+    this.mutationChain = done.then(() => {}, () => {});
+    return done;
   }
 
   /** Absolute store root, resolved from the agent server's home dir once. */
@@ -220,33 +242,37 @@ export class Store {
   }
 
   async selectWorkspace(path) {
-    const index = await this.readIndex();
-    const existing = index.workspaces.find((w) => w.path === path);
-    if (existing) return existing;
+    return this.serialize(async () => {
+      const index = await this.readIndex();
+      const existing = index.workspaces.find((w) => w.path === path);
+      if (existing) return existing;
 
-    const ws = {
-      id: newId(),
-      path,
-      name: path.split("/").filter(Boolean).pop() || path,
-      max_concurrent: 2,
-      push_mode: "main",
-      automation_id: null,
-      manager_conversation_id: null,
-      created_at: nowTs(),
-    };
-    index.workspaces.push(ws);
-    await this.writeIndex(index);
-    await this.writeBoard(ws.id, { version: 1, workspace_id: ws.id, tickets: [] });
-    return ws;
+      const ws = {
+        id: newId(),
+        path,
+        name: path.split("/").filter(Boolean).pop() || path,
+        max_concurrent: 2,
+        push_mode: "main",
+        automation_id: null,
+        manager_conversation_id: null,
+        created_at: nowTs(),
+      };
+      index.workspaces.push(ws);
+      await this.writeIndex(index);
+      await this.writeBoard(ws.id, { version: 1, workspace_id: ws.id, tickets: [] });
+      return ws;
+    });
   }
 
   async updateWorkspace(wsId, patch) {
-    const index = await this.readIndex();
-    const ws = index.workspaces.find((w) => w.id === wsId);
-    if (!ws) throw new Error("workspace not found");
-    Object.assign(ws, patch);
-    await this.writeIndex(index);
-    return ws;
+    return this.serialize(async () => {
+      const index = await this.readIndex();
+      const ws = index.workspaces.find((w) => w.id === wsId);
+      if (!ws) throw new Error("workspace not found");
+      Object.assign(ws, patch);
+      await this.writeIndex(index);
+      return ws;
+    });
   }
 
   // ------------------------------------------------------------------ boards
@@ -261,14 +287,18 @@ export class Store {
     await this.writeJson(await this.boardPath(wsId), {
       ...board, version: 1, workspace_id: wsId,
     });
+    this.writes += 1;
   }
 
-  /** Read, apply `mutate`, write back. Returns whatever `mutate` returns. */
+  /** Read, apply `mutate`, write back. Returns whatever `mutate` returns.
+      Serialized: see `serialize` for why overlapping cycles lose tickets. */
   async mutateBoard(wsId, mutate) {
-    const board = await this.readBoard(wsId);
-    const result = mutate(board);
-    await this.writeBoard(wsId, board);
-    return result;
+    return this.serialize(async () => {
+      const board = await this.readBoard(wsId);
+      const result = mutate(board);
+      await this.writeBoard(wsId, board);
+      return result;
+    });
   }
 
   async getBoard(wsId) {

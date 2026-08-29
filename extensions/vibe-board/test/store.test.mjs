@@ -315,3 +315,51 @@ test("a caching client cannot lose a ticket between writes", async () => {
   assert.deepEqual(bodies, ["first", "second"], "neither write clobbered the other");
   assert.equal(served, 0, "board reads bypass the cache");
 });
+
+/* Every write is a read-modify-write of the whole board, and a board upload
+   takes long enough that a second write started meanwhile (a second submit,
+   an attachment, a drag-reorder) reads the board from before the first one
+   landed and then uploads that stale document over it. The first ticket is
+   gone: it never appears in pending. */
+test("overlapping writes cannot lose a ticket", async () => {
+  const { store, wsId } = scratchStore();
+
+  await Promise.all([
+    store.createTicket(wsId, "first"),
+    store.createTicket(wsId, "second"),
+    store.createTicket(wsId, "third"),
+  ]);
+
+  const { tickets } = await store.getBoard(wsId);
+  assert.deepEqual(
+    tickets.map((t) => t.entries[0].body).sort(),
+    ["first", "second", "third"],
+    "no concurrent write clobbered another",
+  );
+  assert.deepEqual(
+    tickets.map((t) => t.sort_order).sort(),
+    [1, 2, 3],
+    "each ticket got its own slot at the bottom of pending",
+  );
+});
+
+/* Same hazard across ticket operations: an entry appended (or a verify)
+   while a submit is in flight must not resurrect the pre-submit board. */
+test("a write overlapping a submit keeps both changes", async () => {
+  const { store, wsId } = scratchStore();
+  const existing = await store.createTicket(wsId, "already here");
+
+  const [, created] = await Promise.all([
+    store.appendEntry(wsId, existing.id, "more context"),
+    store.createTicket(wsId, "brand new"),
+  ]);
+
+  const { tickets } = await store.getBoard(wsId);
+  assert.equal(tickets.length, 2, "the new ticket survived the concurrent append");
+  assert.ok(tickets.some((t) => t.id === created.id), "created ticket is on the board");
+  assert.equal(
+    tickets.find((t) => t.id === existing.id).entries.length,
+    2,
+    "the appended entry survived the concurrent create",
+  );
+});

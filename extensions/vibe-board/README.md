@@ -22,8 +22,15 @@ build-only dependencies for a 66 KB bundle).
 cd ..             # extensions/
 npm install
 npm run build     # -> vibe-board/dist/extension.js (self-contained browser ESM)
-npm test          # builds, then runs 16 tests against the built bundle
+npm test          # builds, then runs the tests against the built bundle
 npm run validate  # builds, then runs the Canvas extension validator
+```
+
+`npm test` covers the bundle only. The store and live-derivation tests talk to
+the real agent server and automation backend, so they are run on their own:
+
+```sh
+node --test vibe-board/test/store.test.mjs vibe-board/test/live.test.mjs
 ```
 
 `dist/extension.js` is committed, because the Agent Server installs an
