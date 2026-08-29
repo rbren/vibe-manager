@@ -44,6 +44,28 @@ def seed_workspace() -> str:
     return ws_id
 
 
+def stub_fetches(record: list | None = None):
+    """Replace the conversation-metadata fetch so tests never hit the agent server."""
+    def _stub(conv_id: str) -> None:
+        if record is not None:
+            record.append(conv_id)
+        now = time.time()
+        with vibe_app._conv_lock:
+            status = (vibe_app._status_cache.get(conv_id) or {}).get("status")
+            vibe_app._model_cache[conv_id] = {"model": None, "fetched_at": now}
+            vibe_app._status_cache[conv_id] = {"status": status, "fetched_at": now}
+            vibe_app._conv_inflight.discard(conv_id)
+    vibe_app._fetch_conversation = _stub
+
+
+stub_fetches()
+
+
+def prime_status(conv_id: str, status: str) -> None:
+    with vibe_app._conv_lock:
+        vibe_app._status_cache[conv_id] = {"status": status, "fetched_at": time.time()}
+
+
 def make_ticket(ws_id: str, status: str, conversation_id: str | None = None) -> str:
     r = client.post(f"/api/workspaces/{ws_id}/tickets", json={"body": "build the thing"})
     assert r.status_code == 200, r.text
@@ -144,10 +166,53 @@ def test_in_progress_without_cache_is_none():
     print("ok: uncached in_progress ticket has latest_action=None")
 
 
+def test_board_carries_conversation_status():
+    """The SPA needs the worker's execution_status to stop the pulsing dot."""
+    ws_id = seed_workspace()
+    conv_running, conv_done, conv_other = (str(uuid.uuid4()) for _ in range(3))
+    t_running = make_ticket(ws_id, "in_progress", conv_running)
+    t_done = make_ticket(ws_id, "in_progress", conv_done)
+    t_finished = make_ticket(ws_id, "finished", conv_other)
+
+    prime_status(conv_running, "running")
+    prime_status(conv_done, "finished")
+    prime_status(conv_other, "finished")
+
+    r = client.get(f"/api/workspaces/{ws_id}/board")
+    by_id = {t["id"]: t for t in r.json()["tickets"]}
+    assert by_id[t_running]["conversation_status"] == "running"
+    # The screenshot case: card still in_progress, worker conversation done.
+    assert by_id[t_done]["conversation_status"] == "finished"
+    # Only in_progress cards render the indicator, so nothing else carries it.
+    assert by_id[t_finished]["conversation_status"] is None
+    print("ok: board exposes conversation_status on in_progress tickets")
+
+
+def test_conversation_status_refreshes_when_stale():
+    ws_id = seed_workspace()
+    conv = str(uuid.uuid4())
+    tid = make_ticket(ws_id, "in_progress", conv)
+    with vibe_app._conv_lock:
+        vibe_app._status_cache[conv] = {"status": "running", "fetched_at": 0.0}
+
+    fetched: list = []
+    stub_fetches(fetched)
+    r = client.get(f"/api/workspaces/{ws_id}/board")
+    t = next(t for t in r.json()["tickets"] if t["id"] == tid)
+    assert t["conversation_status"] == "running"  # last known until the fetch lands
+    deadline = time.time() + 2
+    while conv not in fetched and time.time() < deadline:
+        time.sleep(0.01)
+    assert fetched == [conv], fetched
+    print("ok: an expired status triggers exactly one background refresh")
+
+
 if __name__ == "__main__":
     test_extract_summary_from_tool_call_arguments()
     test_extract_summary_prefers_action_field()
     test_extract_ignores_non_action_and_missing_summary()
     test_board_carries_latest_action_for_in_progress_only()
     test_in_progress_without_cache_is_none()
+    test_board_carries_conversation_status()
+    test_conversation_status_refreshes_when_stale()
     print("all activity summary tests passed")

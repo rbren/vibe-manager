@@ -117,6 +117,60 @@ def test_resumed_agent_counts_toward_concurrency():
     assert "agent-resumed:t1" in signals, signals
 
 
+def stub_conversations(statuses: dict[str, str], tags: dict | None = None) -> None:
+    """Answer conversation_info() from a dict instead of the agent server."""
+    def _info(conv_id: str) -> dict:
+        return {
+            "status": statuses.get(conv_id, "unknown"),
+            "tags": tags if tags is not None else {
+                "viberole": "manager", "workspace": m.WORKSPACE_PATH,
+            },
+            "created_at_ts": 1000.0,
+        }
+    m.conversation_info = _info
+
+
+def test_worker_done_signal():
+    # The reported bug: the card is still in_progress but its worker
+    # conversation has ended — the manager must be summoned to reconcile it.
+    for status in sorted(m.TERMINAL_CONV_STATUSES):
+        signals, retry_safe = m.compute_signals(WS, [ticket("t1", "in_progress", "c1", status)])
+        assert "worker-done:t1" in signals, (status, signals)
+        assert "worker-done:t1" in retry_safe, (status, retry_safe)
+
+
+def test_only_a_running_manager_blocks_a_new_one():
+    state = {"manager_conversation_id": "mgr", "manager_started_at": 500.0}
+    ws = {"manager_conversation_id": "mgr"}
+
+    stub_conversations({"mgr": "running"})
+    assert m.manager_conversation_state(state, ws)["active"]
+
+    # Everything else means the manager is done — including the failure states
+    # that used to leave the board frozen behind a dead manager.
+    for status in ("error", "stuck", "paused", "idle", "finished", "deleted", "unreachable"):
+        stub_conversations({"mgr": status})
+        mgr = m.manager_conversation_state(state, ws)
+        assert not mgr["active"], status
+        assert mgr["status"] == status
+        assert mgr["failed"] == (status in ("error", "stuck")), status
+
+
+def test_manager_state_falls_back_to_the_workspace_row():
+    stub_conversations({"row-mgr": "running"})
+    mgr = m.manager_conversation_state({}, {"manager_conversation_id": "row-mgr"})
+    assert mgr["id"] == "row-mgr" and mgr["active"]
+    assert mgr["started_at"] == 1000.0  # conversation's own created_at
+
+    # A row-recorded id that isn't tagged as this workspace's manager is ignored.
+    stub_conversations({"row-mgr": "running"}, tags={})
+    mgr = m.manager_conversation_state({}, {"manager_conversation_id": "row-mgr"})
+    assert mgr["id"] is None and not mgr["active"]
+
+    stub_conversations({})
+    assert m.manager_conversation_state({}, {})["id"] is None
+
+
 def test_state_round_trips_conv_statuses():
     assert not m.kv_available()
     state = {"fingerprint": "abc", "conv_statuses": {"c1": "running", "c2": "idle"}}

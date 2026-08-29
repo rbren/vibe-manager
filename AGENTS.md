@@ -45,8 +45,22 @@ via /etc/nginx/.htpasswd).
   ŌåÆ execution_status) for every tracked ticket conversation; a conversation
   running while its ticket is NOT in_progress (e.g. the user manually messaged
   a needs_input worker) raises an `agent-resumed` signal so the manager moves
-  the card back to in_progress. Tests:
-  `python tests/test_automation_conv_state.py` (pure stdlib).
+  the card back to in_progress; the converse — an in_progress ticket whose
+  conversation reached a `TERMINAL_CONV_STATUSES` value — raises
+  `worker-done`, which is what gets the card reconciled after a worker ends.
+  Tests: `python tests/test_automation_conv_state.py` (pure stdlib).
+  - **Manager-conversation guard**: `manager_conversation_state()` reports
+    {id, status, started_at, active, failed} for the manager conversation the
+    workspace started last (KV id first, then the tag-verified workspace-row
+    id). Only `MANAGER_ACTIVE_STATUS` ("running") suppresses a new kickoff —
+    error/stuck/paused/idle/finished all mean the manager is done. A manager
+    that ended in `MANAGER_FAILED_STATUSES` (error/stuck) never touched the
+    board, so the fingerprint is unchanged and the retry-safe signals are
+    still there: `kickoff_decision(..., manager_failed=True)` then restarts it
+    immediately instead of waiting out `RETRY_INTERVAL_SECONDS` (still capped
+    by `MAX_RETRY_ATTEMPTS` per unchanged fingerprint, so a manager that keeps
+    dying can't loop). Without this a crashed manager froze the board for
+    10 minutes at a time and then gave up entirely.
   - Deferral contract: if the Manager deliberately does NOT dispatch a pending
     ticket it must set `manager_note`, which suppresses the dispatchable
     signal until the board changes.
@@ -134,6 +148,19 @@ via /etc/nginx/.htpasswd).
   without one (`ACTIVITY_IDLE_TTL`). Requires the `websockets` package in the
   service venv (`.venv/bin/pip install websockets`). Tests:
   `tests/test_activity_summary.py`.
+  - **Live vs. done**: a summary is only *live* while the worker conversation
+    is. in_progress tickets therefore also carry `conversation_status` (the
+    agent server's `execution_status`, `_status_cache` with a 10 s
+    `CONV_STATUS_TTL` — same background fetch as `llm_model`, one GET feeds
+    both caches). `DONE_CONV_STATUSES` in app.js (finished/idle/error/stuck/
+    paused/deleted) switches the card from the pulsing `.activity-dot` +
+    `.card.live` rail to a static `.activity-check` ✓ (`.card-activity.done`
+    / `.drawer-activity.done`, caret suppressed). Without it a card whose
+    worker had finished kept blinking as if work were still happening.
+    **The Canvas extension still needs the same treatment**: `Live.decorate`
+    in `extensions/kanban-manager/src/live.js` doesn't derive
+    `conversation_status`, so `extension.js` always adds `.live`. The CSS is
+    already there (it builds from `static/style.css`).
 - **Per-ticket LLM model chip**: every ticket dict with a `conversation_id`
   carries `llm_model` (from the agent server's conversation metadata,
   `agent.llm.model` on `GET /api/conversations/<id>`). app.py caches it
@@ -347,7 +374,9 @@ via /etc/nginx/.htpasswd).
   and `systemctl daemon-reload` after edits). nginx site:
   `nginx/vibe.apps.canvas.rbren.io` (copy to sites-available).
 - After editing `automation/main.py`, re-select the workspace in the UI (or
-  POST /api/workspaces) to re-upload the tarball to existing automations.
+  POST /api/workspaces) to re-upload the tarball to existing automations —
+  and re-run the extension build, whose bundle embeds `automation/*.py` too
+  (see Canvas Extensions).
 
 - Git remote: `origin` is https://github.com/rbren/vibe-manager (PRIVATE
   repo; push-to-master allowed). The remote URL embeds a GitHub token pulled

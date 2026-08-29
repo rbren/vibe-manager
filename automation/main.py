@@ -58,6 +58,8 @@ MANAGER_STALE_SECONDS = 45 * 60  # give up on a manager conversation after this
 RETRY_INTERVAL_SECONDS = 10 * 60  # re-kick manager if signals persist without board change
 MAX_RETRY_ATTEMPTS = 3  # cap crash-recovery retries per unchanged board state
 TERMINAL_CONV_STATUSES = {"finished", "idle", "error", "stuck", "deleted", "paused"}
+MANAGER_ACTIVE_STATUS = "running"  # the only status that means "still working"
+MANAGER_FAILED_STATUSES = {"error", "stuck"}  # died without finishing its job
 
 
 # ------------------------------------------------------------------- http utils
@@ -181,8 +183,13 @@ def conversation_status(conv_id: str) -> str:
     return conversation_info(conv_id)["status"]
 
 
-def find_running_manager(state: dict, ws: dict) -> tuple[str, float] | None:
-    """Return (conv_id, started_ts) of a still-running manager for this workspace.
+def manager_conversation_state(state: dict, ws: dict) -> dict:
+    """State of the manager conversation this workspace started last.
+
+    Returns {id, status, started_at, active, failed}. Only `running` counts as
+    active: a manager that ended in error/stuck (or paused/idle/finished) is
+    done and must never suppress the next kickoff — otherwise a crashed
+    manager freezes the board until someone notices.
 
     Checks the KV-tracked id first, then the id recorded on the workspace row
     (survives KV state loss). Tags verify it really is this workspace's manager.
@@ -195,16 +202,20 @@ def find_running_manager(state: dict, ws: dict) -> tuple[str, float] | None:
         candidates.append(row_conv)
     for conv_id in candidates:
         info = conversation_info(conv_id)
-        if info["status"] != "running":
-            continue
         # The KV-tracked id is trusted; a row-recorded id must carry our tags.
-        if conv_id == state.get("manager_conversation_id") or (
+        if conv_id != state.get("manager_conversation_id") and not (
             info["tags"].get("viberole") == "manager"
             and info["tags"].get("workspace") == WORKSPACE_PATH
         ):
-            started = state.get("manager_started_at") or info["created_at_ts"]
-            return conv_id, started
-    return None
+            continue
+        return {
+            "id": conv_id,
+            "status": info["status"],
+            "started_at": state.get("manager_started_at") or info["created_at_ts"],
+            "active": info["status"] == MANAGER_ACTIVE_STATUS,
+            "failed": info["status"] in MANAGER_FAILED_STATUSES,
+        }
+    return {"id": None, "status": None, "started_at": 0.0, "active": False, "failed": False}
 
 
 _PR_RE = re.compile(r"github\.com/([^/]+)/([^/]+)/pull/(\d+)")
@@ -361,7 +372,7 @@ def compute_signals(ws: dict, tickets: list[dict]) -> tuple[list[str], list[str]
 
 
 def kickoff_decision(state: dict, changed: bool, signals: list[str],
-                     retry_safe: list[str]) -> tuple[bool, int]:
+                     retry_safe: list[str], manager_failed: bool = False) -> tuple[bool, int]:
     """Return (kick_manager, retry_count) for this cycle.
 
     Normal path: kick when the board changed AND something is actionable.
@@ -371,12 +382,19 @@ def kickoff_decision(state: dict, changed: bool, signals: list[str],
     cap, a manager that completed but deliberately declined to act would be
     re-summoned every RETRY_INTERVAL forever (the 2026-08-21 overnight loop:
     50 no-op manager runs). The count resets whenever the fingerprint changes.
+
+    `manager_failed` (the last manager conversation ended in error/stuck)
+    skips the slow cadence: the board is unchanged precisely because that
+    manager never acted, so waiting out RETRY_INTERVAL just leaves the cards
+    stale. The attempt cap still applies, so a manager that keeps dying can
+    only be restarted MAX_RETRY_ATTEMPTS times per board state.
     """
     retry_count = 0 if changed else state.get("retry_count", 0)
+    waited = time.time() - (state.get("manager_started_at") or 0)
     stale_retry = (
         bool(retry_safe)
         and retry_count < MAX_RETRY_ATTEMPTS
-        and time.time() - (state.get("manager_started_at") or 0) > RETRY_INTERVAL_SECONDS
+        and (manager_failed or waited > RETRY_INTERVAL_SECONDS)
     )
     return bool(signals and changed) or stale_retry, retry_count
 
@@ -543,19 +561,21 @@ def main() -> None:
     state = load_state()
     board = snapshot()
 
-    # If a manager conversation is already running for this workspace, bail
-    # out. Checks both the KV-tracked id and the workspace-row id (tag-verified),
+    # If a manager conversation is still running for this workspace, bail out.
+    # Checks both the KV-tracked id and the workspace-row id (tag-verified),
     # so a lost KV state can't cause overlapping managers.
-    running = find_running_manager(state, board["workspace"])
-    if running:
-        conv_id, started = running
-        if time.time() - started < MANAGER_STALE_SECONDS:
-            print(f"manager conversation {conv_id} still running — skipping")
+    mgr = manager_conversation_state(state, board["workspace"])
+    if mgr["active"]:
+        if time.time() - mgr["started_at"] < MANAGER_STALE_SECONDS:
+            print(f"manager conversation {mgr['id']} still running — skipping")
             fire_callback()
             return
-        print(f"manager conversation {conv_id} exceeded stale limit — proceeding")
+        print(f"manager conversation {mgr['id']} exceeded stale limit — proceeding")
     elif state.get("manager_conversation_id"):
-        print(f"previous manager conversation {state['manager_conversation_id']} ended")
+        print(
+            f"previous manager conversation {state['manager_conversation_id']} "
+            f"ended ({mgr['status']})"
+        )
         state["last_manager_finished_at"] = time.time()
     state["manager_conversation_id"] = None
 
@@ -569,9 +589,12 @@ def main() -> None:
     state["conv_statuses"] = conv_statuses(tickets)
 
     changed = fp != state.get("fingerprint")
-    kick, retry_count = kickoff_decision(state, changed, signals, retry_safe)
+    kick, retry_count = kickoff_decision(
+        state, changed, signals, retry_safe, manager_failed=mgr["failed"]
+    )
     print(
         f"fingerprint changed: {changed}; signals: {signals or 'none'}; "
+        f"last manager: {mgr['status'] or 'none'}; "
         f"kick: {kick} (retries used: {retry_count}/{MAX_RETRY_ATTEMPTS})"
     )
 

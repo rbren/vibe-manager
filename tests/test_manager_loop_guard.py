@@ -140,6 +140,34 @@ def test_no_stale_retry_within_interval():
     assert not kick
 
 
+def test_failed_manager_retries_without_waiting():
+    # A manager that died in error/stuck never touched the board, so the
+    # fingerprint is unchanged — don't sit out the slow retry cadence.
+    state = {"retry_count": 0, "manager_started_at": time.time()}
+    kick, _ = m.kickoff_decision(state, False, ["sig"], ["sig"], manager_failed=True)
+    assert kick
+
+
+def test_failed_manager_retries_are_still_capped():
+    # ...but a manager that keeps dying must not be restarted forever.
+    state = {"manager_started_at": time.time()}
+    kicks = 0
+    for _ in range(m.MAX_RETRY_ATTEMPTS + 5):
+        kick, retry_count = m.kickoff_decision(
+            state, False, ["sig"], ["sig"], manager_failed=True
+        )
+        state["retry_count"] = retry_count + (1 if kick else 0)
+        state["manager_started_at"] = time.time()
+        kicks += 1 if kick else 0
+    assert kicks == m.MAX_RETRY_ATTEMPTS, kicks
+
+
+def test_failed_manager_needs_a_retry_safe_signal():
+    state = {"retry_count": 0, "manager_started_at": time.time()}
+    kick, _ = m.kickoff_decision(state, False, ["one-shot"], [], manager_failed=True)
+    assert not kick
+
+
 def main() -> None:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

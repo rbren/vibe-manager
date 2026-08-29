@@ -321,18 +321,21 @@ def note_activity_interest(conv_ids: list[str]) -> None:
         _loop.call_soon_threadsafe(_start, cid)
 
 
-# ---------------------------------------------------- conversation LLM model
+# ------------------------------------------- conversation model + exec status
 #
-# Each ticket with a conversation shows the model that conversation runs on
-# (from the agent server's conversation metadata: agent.llm.model). Fetches
-# happen in background threads and results are cached, so the SPA's 5s board
-# poll never blocks on — or hammers — the agent server, and the session API
-# key stays server-side.
+# Two things ride on the board from the agent server's conversation metadata
+# (GET /api/conversations/<id>): the model the conversation runs on
+# (agent.llm.model) and its execution_status, which tells the SPA whether the
+# worker is still acting. One fetch feeds both caches, in a background thread,
+# so the SPA's 5s board poll never blocks on — or hammers — the agent server,
+# and the session API key stays server-side.
 
 MODEL_CACHE_TTL = 300.0
-_model_lock = threading.Lock()
+CONV_STATUS_TTL = 10.0  # the live/done indicator has to flip promptly
+_conv_lock = threading.Lock()
 _model_cache: dict[str, dict] = {}  # conv_id -> {"model": str|None, "fetched_at": float}
-_model_inflight: set[str] = set()
+_status_cache: dict[str, dict] = {}  # conv_id -> {"status": str|None, "fetched_at": float}
+_conv_inflight: set[str] = set()
 
 
 def extract_conversation_model(meta: dict) -> str | None:
@@ -348,28 +351,39 @@ def extract_conversation_model(meta: dict) -> str | None:
 def _prime_model_cache(conv_id: str, model: str | None) -> None:
     if not model:
         return
-    with _model_lock:
+    with _conv_lock:
         _model_cache[conv_id] = {"model": model, "fetched_at": time.time()}
 
 
 def _invalidate_model_cache(conv_id: str) -> None:
-    with _model_lock:
+    with _conv_lock:
         _model_cache.pop(conv_id, None)
 
 
-def _fetch_model(conv_id: str) -> None:
-    model = None
+def _fetch_conversation(conv_id: str) -> None:
+    """Refresh model + execution status from one conversation-metadata GET."""
+    model = status = None
     try:
         meta = agent_get(f"/api/conversations/{conv_id}?include_skills=false", timeout=30)
         model = extract_conversation_model(meta)
+        status = meta.get("execution_status")
     except Exception as exc:
-        log.info("model fetch failed for %s: %s", conv_id, exc)
-    with _model_lock:
-        prev = _model_cache.get(conv_id)
-        if model is None and prev and prev.get("model"):
-            model = prev["model"]  # keep last known on transient failures
-        _model_cache[conv_id] = {"model": model, "fetched_at": time.time()}
-        _model_inflight.discard(conv_id)
+        log.info("conversation fetch failed for %s: %s", conv_id, exc)
+    now = time.time()
+    with _conv_lock:
+        prev_model = _model_cache.get(conv_id)
+        if model is None and prev_model and prev_model.get("model"):
+            model = prev_model["model"]  # keep last known on transient failures
+        _model_cache[conv_id] = {"model": model, "fetched_at": now}
+        prev_status = _status_cache.get(conv_id)
+        if status is None and prev_status:
+            status = prev_status.get("status")
+        _status_cache[conv_id] = {"status": status, "fetched_at": now}
+        _conv_inflight.discard(conv_id)
+
+
+def _refresh_conversation(conv_id: str) -> None:
+    threading.Thread(target=_fetch_conversation, args=(conv_id,), daemon=True).start()
 
 
 def get_conversation_model(conv_id: str, sticky: bool = False) -> str | None:
@@ -380,15 +394,29 @@ def get_conversation_model(conv_id: str, sticky: bool = False) -> str | None:
     server for it.
     """
     now = time.time()
-    with _model_lock:
+    with _conv_lock:
         entry = _model_cache.get(conv_id)
         model = entry["model"] if entry else None
         fresh = entry is not None and now - entry["fetched_at"] < MODEL_CACHE_TTL
-        if (sticky and model) or fresh or conv_id in _model_inflight:
+        if (sticky and model) or fresh or conv_id in _conv_inflight:
             return model
-        _model_inflight.add(conv_id)
-    threading.Thread(target=_fetch_model, args=(conv_id,), daemon=True).start()
+        _conv_inflight.add(conv_id)
+    _refresh_conversation(conv_id)
     return model
+
+
+def get_conversation_status(conv_id: str) -> str | None:
+    """Cached execution_status for a conversation; refreshes in the background."""
+    now = time.time()
+    with _conv_lock:
+        entry = _status_cache.get(conv_id)
+        status = entry["status"] if entry else None
+        fresh = entry is not None and now - entry["fetched_at"] < CONV_STATUS_TTL
+        if fresh or conv_id in _conv_inflight:
+            return status
+        _conv_inflight.add(conv_id)
+    _refresh_conversation(conv_id)
+    return status
 
 
 # --------------------------------------------------------------------- models
@@ -490,6 +518,13 @@ def ticket_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     )
     d["latest_action"] = (
         get_activity(row["conversation_id"])
+        if row["status"] == "in_progress" and row["conversation_id"]
+        else None
+    )
+    # Whether that last action is still live: an in_progress card whose worker
+    # conversation has reached a terminal status stops pulsing.
+    d["conversation_status"] = (
+        get_conversation_status(row["conversation_id"])
         if row["status"] == "in_progress" and row["conversation_id"]
         else None
     )

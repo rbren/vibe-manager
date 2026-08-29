@@ -61,20 +61,43 @@ def make_ticket(ws_id: str, status: str, conversation_id: str | None = None) -> 
 
 # The real fetch hits the agent server; capture it before stubbing so the
 # failure-path test can still exercise it with agent_get patched.
-REAL_FETCH_MODEL = vibe_app._fetch_model
+REAL_FETCH = vibe_app._fetch_conversation
 
 
 def stub_fetches(record: list | None = None):
-    """Replace the background fetch so tests never hit the agent server."""
+    """Replace the background fetch so tests never hit the agent server.
+
+    It keeps the real fetch's bookkeeping — both caches stamped, inflight
+    cleared — so a board request costs one fetch per conversation whether or
+    not the thread has already finished.
+    """
     def _stub(conv_id: str) -> None:
         if record is not None:
             record.append(conv_id)
-        with vibe_app._model_lock:
-            vibe_app._model_inflight.discard(conv_id)
-    vibe_app._fetch_model = _stub
+        now = time.time()
+        with vibe_app._conv_lock:
+            model = (vibe_app._model_cache.get(conv_id) or {}).get("model")
+            status = (vibe_app._status_cache.get(conv_id) or {}).get("status")
+            vibe_app._model_cache[conv_id] = {"model": model, "fetched_at": now}
+            vibe_app._status_cache[conv_id] = {"status": status, "fetched_at": now}
+            vibe_app._conv_inflight.discard(conv_id)
+    vibe_app._fetch_conversation = _stub
 
 
 stub_fetches()
+
+
+def prime_status(conv_id: str, status: str = "running") -> None:
+    with vibe_app._conv_lock:
+        vibe_app._status_cache[conv_id] = {"status": status, "fetched_at": time.time()}
+
+
+def forget(conv_id: str) -> None:
+    """Drop all cached traces of a conversation (a ticket PATCH primes them)."""
+    with vibe_app._conv_lock:
+        vibe_app._model_cache.pop(conv_id, None)
+        vibe_app._status_cache.pop(conv_id, None)
+        vibe_app._conv_inflight.discard(conv_id)
 
 
 def conversation_meta(model="anthropic/claude-fable-5") -> dict:
@@ -132,6 +155,7 @@ def test_uncached_conversation_triggers_one_background_fetch():
     ws_id = seed_workspace()
     conv = str(uuid.uuid4())
     tid = make_ticket(ws_id, "in_progress", conv)
+    forget(conv)  # the PATCH response already went through the caches
 
     fetched: list = []
     stub_fetches(fetched)
@@ -152,8 +176,9 @@ def test_fresh_cache_and_sticky_terminal_skip_refetch():
     make_ticket(ws_id, "finished", conv_done)
 
     vibe_app._prime_model_cache(conv_fresh, "model-a")
+    prime_status(conv_fresh)  # in_progress cards also want the execution status
     # Terminal-status ticket with a long-expired entry: model is sticky.
-    with vibe_app._model_lock:
+    with vibe_app._conv_lock:
         vibe_app._model_cache[conv_done] = {"model": "model-b", "fetched_at": 0.0}
 
     fetched: list = []
@@ -170,13 +195,13 @@ def test_switch_invalidation_and_failure_keeps_last_known():
     conv = str(uuid.uuid4())
     vibe_app._prime_model_cache(conv, "model-a")
     vibe_app._invalidate_model_cache(conv)
-    with vibe_app._model_lock:
+    with vibe_app._conv_lock:
         assert conv not in vibe_app._model_cache
 
     # A failed refetch must keep the last known model (transient agent-server
     # errors shouldn't blank chips on the board).
     vibe_app._prime_model_cache(conv, "model-a")
-    with vibe_app._model_lock:
+    with vibe_app._conv_lock:
         prev_fetched = vibe_app._model_cache[conv]["fetched_at"]
 
     real_agent_get = vibe_app.agent_get
@@ -184,10 +209,10 @@ def test_switch_invalidation_and_failure_keeps_last_known():
         raise RuntimeError("boom")
     vibe_app.agent_get = boom
     try:
-        REAL_FETCH_MODEL(conv)
+        REAL_FETCH(conv)
     finally:
         vibe_app.agent_get = real_agent_get
-    with vibe_app._model_lock:
+    with vibe_app._conv_lock:
         entry = vibe_app._model_cache[conv]
     assert entry["model"] == "model-a"
     assert entry["fetched_at"] >= prev_fetched

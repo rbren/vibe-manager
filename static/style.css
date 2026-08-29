@@ -446,6 +446,12 @@ html[data-theme="light"] .verify-btn:hover { color: var(--card); }
   0%, 100% { opacity: .3; transform: scale(.8); }
   50% { opacity: 1; transform: scale(1); }
 }
+/* the worker conversation ended: the last action is history, not telemetry */
+.activity-check {
+  flex: none; align-self: center; font-size: 0.75rem; line-height: 1;
+}
+.card-activity.done, .drawer-activity.done { color: var(--text-dim); }
+.drawer-activity.done { border-left-color: var(--text-dim); }
 .activity-text {
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   overflow: hidden; word-break: break-word;
@@ -453,6 +459,7 @@ html[data-theme="light"] .verify-btn:hover { color: var(--card); }
 .activity-text::after {
   content: "▍"; margin-left: 2px; animation: caret 1.1s steps(1) infinite;
 }
+.done .activity-text::after { content: none; }
 @keyframes caret { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
 
 .drag-handle {

@@ -27,6 +27,12 @@ const STATUS_LABEL = {
   verified: "verified",
 };
 
+// Execution statuses in which a worker conversation has stopped acting: its
+// last action line is history, so the card shows a checkmark, not a pulse.
+const DONE_CONV_STATUSES = new Set([
+  "finished", "idle", "error", "stuck", "paused", "deleted",
+]);
+
 // An empty lane is an invitation to act, not a blank box.
 const LANE_EMPTY = {
   pending: "Nothing queued. Send a request above.",
@@ -346,6 +352,20 @@ function modelChip(model) {
   return chip;
 }
 
+function workerDone(t) {
+  return DONE_CONV_STATUSES.has(t.conversation_status);
+}
+
+function activityNodes(act, done) {
+  const mark = document.createElement("span");
+  mark.className = done ? "activity-check" : "activity-dot";
+  if (done) mark.textContent = "✓";
+  const text = document.createElement("span");
+  text.className = "activity-text";
+  text.textContent = act.summary;
+  return [mark, text];
+}
+
 function cardEl(t) {
   const firstEntry = t.entries[0]?.body ?? "";
   const el = document.createElement("div");
@@ -378,15 +398,12 @@ function cardEl(t) {
   }
 
   if (t.status === "in_progress" && t.latest_action?.summary) {
-    el.classList.add("live");
+    const done = workerDone(t);
+    if (!done) el.classList.add("live");
     const act = document.createElement("div");
-    act.className = "card-activity";
+    act.className = done ? "card-activity done" : "card-activity";
     act.title = t.latest_action.tool ? `tool: ${t.latest_action.tool}` : "";
-    act.innerHTML = `<span class="activity-dot"></span>`;
-    const text = document.createElement("span");
-    text.className = "activity-text";
-    text.textContent = t.latest_action.summary;
-    act.appendChild(text);
+    act.append(...activityNodes(t.latest_action, done));
     el.appendChild(act);
   }
 
@@ -681,15 +698,13 @@ function renderDrawer() {
 
   const activity = $("#drawer-activity");
   const act = t.status === "in_progress" ? t.latest_action : null;
+  const done = workerDone(t);
   activity.hidden = !act?.summary;
   activity.innerHTML = "";
+  activity.classList.toggle("done", !!act?.summary && done);
   if (act?.summary) {
     activity.title = act.tool ? `tool: ${act.tool}` : "";
-    activity.innerHTML = `<span class="activity-dot"></span>`;
-    const text = document.createElement("span");
-    text.className = "activity-text";
-    text.textContent = act.summary;
-    activity.appendChild(text);
+    activity.append(...activityNodes(act, done));
   }
 
   const atts = $("#drawer-attachments");
