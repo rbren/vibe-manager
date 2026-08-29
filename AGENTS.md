@@ -415,6 +415,14 @@ file API — so there is nothing to configure and no second service to run:
   the ticket created just before it. Attachment blobs are immutable and stay
   cacheable. Note the store still has no locking, so this is only safe because
   the board is single-user; concurrent writers would still lose updates.
+- **`bin/config.json` is shared by ALL workspaces** (`workspace_id`,
+  `workspace_path`, `store_dir`) and is rewritten on every workspace
+  bootstrap/refresh, so `vibectl.py`'s implicit workspace defaults are racy:
+  observed 2026-08-29 — two `snapshot` calls ~60 s apart from the
+  vibe-manager manager returned the vibe-manager board and then the
+  **dj-station** board, and a following `patch` failed with "ticket not
+  found". Manager agents should pass `--workspace-id` / `--working-dir`
+  explicitly rather than relying on the defaults.
 
 Operational notes for the extension:
 
