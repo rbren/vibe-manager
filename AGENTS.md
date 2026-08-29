@@ -549,12 +549,23 @@ server code), which is why the FastAPI service could not come along.
 
 **The extension no longer talks to app.py at all.** Board state is JSON on
 disk under `~/.openhands/vibe-manager/` (`index.json` +
-`workspaces/<id>/board.json`), read and written through the agent server's
-file API — so there is nothing to configure and no second service to run:
+`workspaces/<id>/tickets/<ticket_id>/ticket.json`), read and written through
+the agent server's file API — so there is nothing to configure and no second
+service to run:
 
 - `src/store.js` (`Store`) owns all reads/writes. It resolves the store root
   at runtime from `GET /api/file/home` (field is **`home`**) — never hardcode
-  `/root`. Paths: `<home>/.openhands/vibe-manager/workspaces/<id>/board.json`.
+  `/root`. Paths:
+  `<home>/.openhands/vibe-manager/workspaces/<id>/tickets/<tid>/ticket.json`.
+- **One file per ticket** (2026-08-29, ticket 3f191ab9a7ff). There is no
+  `board.json` any more: `readBoard` lists `tickets/` via
+  `GET /api/file/search_subdirs` and reads each ticket in parallel. A ticket
+  is a DIRECTORY holding `ticket.json` because the file API can enumerate
+  subdirectories but has no endpoint that lists files — the directory is what
+  makes the board reconstructible. Workspaces predating the split still read
+  the legacy `board.json` when `tickets/` 404s;
+  `scripts/migrate_per_ticket.py` performs the split (idempotent, renames the
+  old file to `board.json.migrated`). See `store/SCHEMA.md`.
 - `src/live.js` (`Live`) decorates tickets with `latest_action` / `llm_model`
   and builds `conversation_url` as an **in-app relative** `/conversations/<id>`;
   the UI routes those through the host's `navigate` rather than a new tab.
@@ -574,34 +585,33 @@ file API — so there is nothing to configure and no second service to run:
     `python3 tests/test_vibectl_workspace_isolation.py`.
 - Ticket text is in `entries[0].body`; there is no top-level `body` field.
 - **`/api/file/download` sends ETag/Last-Modified but no `Cache-Control`**, so
-  browsers heuristically cache it (~10% of the file's age). `readJson` defeats
-  this per read with a `_=<now>` param + `Cache-Control: no-cache`; keep it
-  that way. Without it the poll shows a stale board AND — because every write
-  is a read-modify-write via `mutateBoard` — a stale read silently destroys
-  the ticket created just before it. Attachment blobs are immutable and stay
-  cacheable.
-- **Every write is a read-modify-write of the whole document, so writes are
-  serialized** (`Store.serialize`, a promise chain; `mutateBoard` and
-  `mutateIndex` run through it). Two cycles in flight at once — a second
-  submit, an attachment upload, a drag-reorder — used to have the later one
-  download the board from before the earlier upload and write that copy back,
-  dropping the ticket just created (ticket 3f191ab9a7ff, "cards dont always
-  show up in pending"): three concurrent `createTicket` calls left ONE ticket
-  on disk. Anything a mutation calls must therefore NOT call `serialize` again
-  (`readBoard`/`writeBoard`/`readIndex`/`writeIndex` are deliberately
-  unserialized).
-- **The writers outside the tab are caught by compare-and-retry instead**: the
-  automation's mechanical transitions and the manager's `vibectl patch`
-  read-modify-write the same documents from the shell, where no promise chain
-  reaches. `index.json`/`board.json` carry `rev` (bumped per write) and
-  `writer` (a token for the write that produced the state), and both
-  `Store.mutateDoc` and `vibestore._mutate_document` read → mutate → re-read
-  and start over if `rev` moved → write → re-read and re-apply if someone
-  else's write won. The shell side also flocks `<document>.lock` (automation
-  vs. manager CLI). Any new writer MUST keep both fields and bump `rev`, or it
-  looks like a lost write and gets retried over. A residual window remains
-  between the last pre-write read and the upload landing — the file API has no
-  conditional write — but it is one round trip instead of the whole mutation.
+  browsers heuristically cache it (~10% of the file's age). Both `readJson`
+  AND the `search_subdirs` listing defeat this per read with a `_=<now>` param
+  + `Cache-Control: no-cache`; keep it that way. A cached LISTING is the worse
+  of the two — it omits a ticket directory created moments earlier, i.e. the
+  card never appears at all. Attachment blobs are immutable and stay cacheable.
+- **The layout, not a locking protocol, is what keeps tickets safe.** The
+  whole-board `board.json` could not be made safe: every actor (extension,
+  the once-a-minute automation, the manager's `vibectl`) read-modify-wrote it,
+  and the file API has no conditional upload to build a compare-and-swap on —
+  an upload carrying a stale precondition is accepted, not rejected. Measured
+  over a 40-run interleaving sweep, the manager's edit was lost 35/40 times;
+  adding `rev`/`writer` only got that to 8/40, because a writer can confirm
+  its own write landed without noticing it destroyed someone else's. Per-ticket
+  files remove the shared document entirely: 0/40. **Do not reintroduce any
+  whole-board write.**
+- **`rev`/`writer` remain as a backstop** for the two documents still shared —
+  `index.json`, and a single ticket two writers both target. `Store.mutateDoc`
+  and `vibestore._mutate_document` read → mutate → re-read and start over if
+  `rev` moved → write → re-read and re-apply if someone else's write won; the
+  shell side also flocks `<document>.lock`. Any new writer MUST keep both
+  fields and bump `rev`. Treat this as detection, not prevention.
+- **Writes are still serialized within a tab** (`Store.serialize`, a promise
+  chain) so two of this tab's own cycles queue instead of racing — notably so
+  concurrent submits pick distinct `sort_order` slots. Anything a mutation
+  calls must therefore NOT call `serialize` again: `createTicket` delegates to
+  an unserialized `createTicketNow`, and `appendEntry` reads the pending tail
+  BEFORE entering `mutateTicket`, or it would deadlock on its own queue.
   Tests: `node --test extensions/kanban-manager/test/store.test.mjs` (drives the
   real file API AND the real `vibestore.py` as the racing writer) and
   `python3 tests/test_board_store_concurrency.py`.
@@ -656,9 +666,24 @@ Operational notes for the extension:
   backend, so run them explicitly:
   `cd extensions && node --test kanban-manager/test/*.mjs`. They write to a temp
   store root (`mkdtemp`), never the real `~/.openhands/vibe-manager` — keep it
-  that way, they create and delete workspaces.
+  that way, they create and delete workspaces. A `Store` built without an
+  explicit root defaults to the REAL store, so any harness that forgets to
+  pass `ROOT` silently pollutes it: nine `cache-*` workspaces with `/git/...`
+  paths were found and removed on 2026-08-29. If a workspace shows up whose
+  `path` does not exist on disk, that is what it is.
 - `extensions/kanban-manager/dist/extension.js` is **committed**: the agent-server
   installs by copying files and never runs a build.
+- **`automation/vibestore.py` is copied into three places, and editing the
+  repo copy alone changes nothing at runtime.** Deploying a store change means
+  all of: (1) reinstall the extension (`POST
+  /api/canvas-extensions/install` with `"force": true`, which recopies
+  `dist/extension.js` into
+  `~/.openhands/canvas-extensions/installed/kanban-manager/`), (2)
+  `python3 scripts/push_automation.py` to re-tarball every workspace's
+  automation, and (3) refresh `<store>/bin/<ws_id>/vibestore.py`, the
+  per-workspace manager CLI copy — it is written at install time and does NOT
+  follow the repo. Skipping (3) leaves `vibectl snapshot` crashing on the new
+  layout while the automation itself succeeds.
 - `static/style.css` stays the single source of truth. `build.mjs` scopes every
   selector under `.vibe-ext` and rewrites `html`/`:root`/`body` and
   `html[data-theme="light"]` onto that root, so the extension can't restyle
