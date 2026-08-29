@@ -137,6 +137,9 @@ def _load_automation(agent_server: str):
     # The profile list comes from the agent server, not the old service.
     os.environ["AGENT_SERVER_URL"] = agent_server
     os.environ["SESSION_API_KEY"] = "test-key"
+    # Importing main.py installs the workspace's CLI; keep that out of the
+    # real store under $HOME.
+    os.environ["VIBE_STORE_DIR"] = str(TMP / "store")
     (mod_dir / "config.json").write_text(json.dumps({
         "workspace_id": "ws-test",
         "workspace_path": "/tmp/ws-test",
