@@ -422,7 +422,10 @@ file API — so there is nothing to configure and no second service to run:
   vibe-manager manager returned the vibe-manager board and then the
   **dj-station** board, and a following `patch` failed with "ticket not
   found". Manager agents should pass `--workspace-id` / `--working-dir`
-  explicitly rather than relying on the defaults.
+  explicitly rather than relying on the defaults. Both are *global* options,
+  so they must come BEFORE the subcommand
+  (`vibectl.py --workspace-id X snapshot`, not `vibectl.py snapshot
+  --workspace-id X`, which argparse rejects).
 
 Operational notes for the extension:
 
