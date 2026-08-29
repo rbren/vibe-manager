@@ -623,6 +623,14 @@ service to run:
   they must come BEFORE the subcommand (`vibectl.py --workspace-id X
   snapshot`, not `vibectl.py snapshot --workspace-id X`, which argparse
   rejects).
+- **A `patch` that fails with "ticket not found" can simply mean the ticket
+  was deleted between snapshot and patch.** Seen live 2026-08-29 on the
+  vibe-manager board: an external e2e probe created ticket d5c2b4fd058e, the
+  manager dispatched a worker for it, and the probe deleted
+  `tickets/<id>/ticket.json` ~2 min later, leaving an orphan directory holding
+  only `ticket.json.lock`. `read_board` skips such directories, so the card
+  just disappears. Before assuming a store bug, check whether the ticket
+  directory still has a `ticket.json`.
 
 - **The extension creates its own manager automation** (`src/manager.js`,
   user request 2026-05-21) — the last thing that still needed app.py's
