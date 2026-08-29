@@ -125,30 +125,38 @@ def test_agent_settings_unknown_profile_400():
     raise AssertionError("expected HTTPException for unknown profile")
 
 
-def _load_automation(vibe_api: str):
+def _load_automation(agent_server: str):
     mod_dir = TMP / "automation"
     if mod_dir.exists():
         shutil.rmtree(mod_dir)
     mod_dir.mkdir(parents=True)
-    shutil.copy(REPO / "automation" / "main.py", mod_dir / "main.py")
+    # main.py imports vibestore from its own directory and installs the CLI
+    # next to it, as it does when the tarball is unpacked on the agent server.
+    for name in ("main.py", "vibestore.py", "vibectl.py"):
+        shutil.copy(REPO / "automation" / name, mod_dir / name)
+    # The profile list comes from the agent server, not the old service.
+    os.environ["AGENT_SERVER_URL"] = agent_server
+    os.environ["SESSION_API_KEY"] = "test-key"
     (mod_dir / "config.json").write_text(json.dumps({
         "workspace_id": "ws-test",
         "workspace_path": "/tmp/ws-test",
         "workspace_name": "testws",
-        "vibe_api": vibe_api,
+        "vibe_api": agent_server,
         "canvas_base": "http://127.0.0.1:1/",
         "agent_server": "http://127.0.0.1:1/",
     }))
     spec = importlib.util.spec_from_file_location(
-        f"automation_main_{abs(hash(vibe_api))}", mod_dir / "main.py")
+        f"automation_main_{abs(hash(agent_server))}", mod_dir / "main.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
 
-class StubVibe(BaseHTTPRequestHandler):
+class StubAgentServer(BaseHTTPRequestHandler):
+    """The agent server's profile list, which the automation reads directly."""
+
     def do_GET(self):  # noqa: N802
-        if self.path == "/api/manager/llm-profiles":
+        if self.path == "/api/profiles":
             data = json.dumps(PROFILES).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -164,7 +172,7 @@ class StubVibe(BaseHTTPRequestHandler):
 
 
 def test_manager_prompt_lists_models():
-    vs = HTTPServer(("127.0.0.1", 0), StubVibe)
+    vs = HTTPServer(("127.0.0.1", 0), StubAgentServer)
     threading.Thread(target=vs.serve_forever, daemon=True).start()
     mod = _load_automation(f"http://127.0.0.1:{vs.server_port}")
     ws = {"max_concurrent": 2, "push_mode": "main"}
@@ -172,17 +180,18 @@ def test_manager_prompt_lists_models():
     assert "## Model selection for workers" in prompt
     assert "`fable` → anthropic/claude-fable-5 **(active default)**" in prompt
     assert "`opus` → anthropic/claude-opus-5" in prompt
-    assert '"llm_profile"' in prompt
+    # Dispatch goes through the CLI now, so the model is a flag, not a field.
+    assert "--profile <name>" in prompt
     vs.shutdown()
     print("ok: manager prompt lists live profiles with the active default")
 
 
-def test_manager_prompt_degrades_without_vibe_api():
+def test_manager_prompt_degrades_without_agent_server():
     mod = _load_automation("http://127.0.0.1:1")  # dead port
     ws = {"max_concurrent": 2, "push_mode": "main"}
     prompt = mod.build_manager_prompt(ws, [])
     assert "## Model selection for workers" in prompt
-    assert "/api/manager/llm-profiles" in prompt  # self-serve fallback
+    assert "profiles` for the current list" in prompt  # self-serve fallback
     print("ok: manager prompt degrades to self-serve instruction on fetch failure")
 
 
@@ -217,7 +226,7 @@ if __name__ == "__main__":
     test_agent_settings_profile_injection()
     test_agent_settings_unknown_profile_400()
     test_manager_prompt_lists_models()
-    test_manager_prompt_degrades_without_vibe_api()
+    test_manager_prompt_degrades_without_agent_server()
     test_manager_prompt_note_style_rule()
     test_manager_prompt_one_conversation_per_ticket()
     print("all llm profile tests passed")
