@@ -15,17 +15,27 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { Manager, automationName, gzip, tar } from "../src/manager.js";
 
-const INGRESS = process.env.VIBE_TEST_INGRESS || "http://127.0.0.1:8000";
-const KEY = process.env.OH_SESSION_API_KEYS_0
-  || (existsSync("/root/git/vibe-manager/.session-key")
-    ? readFileSync("/root/git/vibe-manager/.session-key", "utf8").trim()
-    : "");
+const here = dirname(fileURLToPath(import.meta.url));
+const first = (...paths) => paths.find((p) => existsSync(p));
 
-const AUTOMATION_DIR = new URL("../../../automation/", import.meta.url).pathname;
+const INGRESS = process.env.VIBE_TEST_INGRESS || "http://127.0.0.1:8000";
+const keyFile = first(
+  join(here, "..", "..", "..", ".session-key"),
+  "/root/git/vibe-manager/.session-key",
+);
+const KEY = process.env.OH_SESSION_API_KEYS_0
+  || (keyFile ? readFileSync(keyFile, "utf8").trim() : "");
+
+// Same two locations build.mjs looks in: repo checkout, then vendored copy.
+const AUTOMATION_DIR = first(
+  join(here, "..", "..", "..", "automation"),
+  join(here, "..", "src", "automation"),
+);
 const MODULES = ["main.py", "vibestore.py", "vibectl.py"];
 
 function realAutomationSources() {

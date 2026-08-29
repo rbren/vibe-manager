@@ -545,6 +545,17 @@ Operational notes for the extension:
   exactly like a product bug.
 - The agent-server manifest schema has no `nav_label`/`description` on pages
   and silently drops them; the frontend falls back to `title`.
+- **The extension is also published to DevinVinson/canvas-extensions** (PR from
+  the `rbren/canvas-extensions` fork; `vibe-board/` there became
+  `kanban-manager/`). That copy must stand alone, so `src/board.css` and
+  `src/automation/*.py` are vendored copies of `static/style.css` and
+  `automation/`, and it keeps the repo's convention of the bundle at the
+  package root with deps in the package itself. To avoid a second build.mjs,
+  the one here looks for each input in both places (`vendored()`) and takes
+  its output path from the manifest's `entrypoint` — so publishing is a file
+  copy plus `entrypoint: "extension.js"` and a package.json, with no code
+  edits. Re-publish by copying `src/`, `test/`, `build.mjs` and the manifest
+  again; `npm run check` there rebuilds and reruns the suite.
 
 ## Canvas Extensions research (2026-05-21)
 

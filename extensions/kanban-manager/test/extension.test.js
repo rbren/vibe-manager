@@ -13,10 +13,11 @@ import { fileURLToPath } from "node:url";
 import { parseHTML } from "linkedom";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const DIST = join(here, "..", "dist", "extension.js");
 const MANIFEST = JSON.parse(
   readFileSync(join(here, "..", "canvas-extension.json"), "utf8"),
 );
+// The bundle is wherever the manifest says the entrypoint is.
+const DIST = join(here, "..", MANIFEST.entrypoint);
 
 /* linkedom gives us a DOM without a browser. The bundle reads these as
    globals at module scope, so they must exist before it is imported. */
