@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """The board survives concurrent writers.
 
-board.json is written from three places: the browser (through the agent
-server's file API), the automation's mechanical transitions, and the manager
-agent's `vibectl patch`. Every one of them is a read-modify-write of the whole
-document, so a write that lands between another writer's read and its write
-used to vanish — including a ticket the user had just added, which is why
-cards went missing from "pending".
+Tickets are written from three places: the browser (through the agent server's
+file API), the automation's mechanical transitions, and the manager agent's
+`vibectl patch`. While the whole board was one document, a write landing
+between another writer's read and its write vanished — including a ticket the
+user had just added, which is why cards went missing from "pending".
+
+Each ticket now has its own file, so writers touching different tickets share
+no document and cannot lose each other's work. Writers touching the SAME
+ticket still share one, and are covered by the rev/writer check.
 
 Pure stdlib. Run with `python tests/test_board_store_concurrency.py`.
 """
@@ -14,6 +17,7 @@ Pure stdlib. Run with `python tests/test_board_store_concurrency.py`.
 from __future__ import annotations
 
 import json
+import shutil
 import os
 import sys
 import tempfile
@@ -57,71 +61,75 @@ def board_ids() -> set[str]:
 
 
 def browser_creates(tid: str) -> None:
-    """What the extension does: read the board, append a ticket, write it back.
+    """What the extension does: write a new ticket file.
 
-    Deliberately NOT through vibestore — the browser writes through the file
-    API and cannot take a local lock, so this is the writer the store has to
-    tolerate.
+    Deliberately NOT through vibestore's locking — the browser writes through
+    the file API and cannot take a local lock, so this is the writer the store
+    has to tolerate.
     """
-    path = vibestore.board_path(WS)
-    board = json.loads(path.read_text())
-    board["tickets"].append(ticket(tid))
-    board["rev"] = (board.get("rev") or 0) + 1
-    path.write_text(json.dumps(board, indent=2))
+    path = vibestore.ticket_path(WS, tid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(ticket(tid), indent=2))
 
 
 print("a ticket added between another writer's read and write survives")
 vibestore.write_board(WS, {"tickets": [ticket("aaa")]})
 fired = threading.Event()
-original_read = vibestore.read_board
+original_read = vibestore.read_ticket
 
 
-def read_then_browser_write(ws_id):
-    board = original_read(ws_id)
+def read_then_browser_write(ws_id, ticket_id):
+    found = original_read(ws_id, ticket_id)
     if not fired.is_set():  # only race the first read, like a real interleaving
         fired.set()
         browser_creates("bbb")
-    return board
+    return found
 
 
-vibestore.read_board = read_then_browser_write
+vibestore.read_ticket = read_then_browser_write
 try:
     vibestore.patch_ticket(WS, "aaa", status="in_progress", manager_note="Worker dispatched")
 finally:
-    vibestore.read_board = original_read
+    vibestore.read_ticket = original_read
 
 ids = board_ids()
 check("bbb" in ids, "the ticket created mid-patch is still on the board")
 check("aaa" in ids, "the patched ticket is still on the board")
 after = {t["id"]: t for t in vibestore.read_board(WS)["tickets"]}
-check(after["aaa"]["status"] == "in_progress", "the patch was re-applied on the fresh board")
+check(after["aaa"]["status"] == "in_progress", "the patch landed")
 check(after["aaa"]["manager_note"] == "Worker dispatched", "all patched fields survived")
 
 
-print("mutate_board hands the mutation a board that already has the racing write")
+print("a write to one ticket cannot disturb another")
 vibestore.write_board(WS, {"tickets": [ticket("ccc")]})
-seen: list[set[str]] = []
 raced = threading.Event()
+original_mutate_read = vibestore.read_ticket
 
 
-def mutate(board):
-    seen.append({t["id"] for t in board["tickets"]})
+def mutate_read(ws_id, ticket_id):
+    found = original_mutate_read(ws_id, ticket_id)
     if not raced.is_set():
         raced.set()
-        browser_creates("ddd")
-    for t in board["tickets"]:
-        if t["id"] == "ccc":
-            t["status"] = "finished"
+        browser_creates("ddd")  # a different ticket, mid-cycle
+    return found
 
 
-vibestore.mutate_board(WS, mutate)
-check(len(seen) > 1, "the mutation is retried when the board changed underneath it")
-check("ddd" in seen[-1], "the retry sees the racing ticket")
+vibestore.read_ticket = mutate_read
+try:
+    vibestore.patch_ticket(WS, "ccc", status="finished")
+finally:
+    vibestore.read_ticket = original_mutate_read
+
 ids = board_ids()
 check({"ccc", "ddd"} <= ids, "both tickets are on the board")
+final = {t["id"]: t for t in vibestore.read_board(WS)["tickets"]}
+check(final["ccc"]["status"] == "finished", "the patched ticket kept its change")
 
 
 print("concurrent patches from several processes/threads all land")
+# Each ticket is its own file, so seeding no longer replaces the board:
+# start from a clean workspace to count exactly these tickets.
+shutil.rmtree(vibestore.tickets_dir(WS), ignore_errors=True)
 tickets = [ticket(f"t{i:03d}") for i in range(12)]
 vibestore.write_board(WS, {"tickets": tickets})
 errors: list[Exception] = []
@@ -147,11 +155,17 @@ lost = [tid for tid in final if final[tid]["status"] != "in_progress"]
 check(not lost, f"every concurrent patch landed (lost: {lost})")
 
 
-print("the board revision advances on every write, so writers can detect races")
-rev_before = vibestore.read_board(WS).get("rev")
+print("a ticket's revision advances on every write, so writers can detect races")
+rev_before = vibestore.read_ticket(WS, "t000").get("rev")
 vibestore.patch_ticket(WS, "t000", manager_note="note")
-rev_after = vibestore.read_board(WS).get("rev")
+rev_after = vibestore.read_ticket(WS, "t000").get("rev")
 check(isinstance(rev_before, int) and rev_after == rev_before + 1, "rev is bumped once per write")
+
+print("patching one ticket leaves its neighbours' revisions untouched")
+neighbour_before = vibestore.read_ticket(WS, "t001").get("rev")
+vibestore.patch_ticket(WS, "t000", manager_note="another")
+check(vibestore.read_ticket(WS, "t001").get("rev") == neighbour_before,
+      "an unrelated ticket is not rewritten")
 
 print()
 if failures:

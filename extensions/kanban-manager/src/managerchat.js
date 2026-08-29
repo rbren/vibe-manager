@@ -48,7 +48,7 @@ You are the **Vibe Manager** for the project at \`${ws.path}\` (workspace id \`$
 The board is JSON on disk. Read it with the workspace's manager CLI:
 - \`python3 ${vibectl} snapshot\` — every ticket with \`status\` (pending/in_progress/needs_input/finished/verified), \`entries\` (the request text, oldest first), \`sort_order\` (the user's priority inside a column, lower first), \`title\`, \`manager_note\`, \`conversation_id\`, \`pr_url\` and \`attachments\`.
 - \`python3 ${vibectl} conversation <conversation_id>\` — \`execution_status\` (running|idle|finished|error|stuck|paused) and the model a ticket's worker is on.
-If that CLI is missing (the automation installs it on its first run), read \`${storeRoot}/workspaces/${ws.id}/board.json\` directly — but never write to it by hand.
+If that CLI is missing (the automation installs it on its first run), read the ticket files under \`${storeRoot}/workspaces/${ws.id}/tickets/\` (one \`<ticket_id>/ticket.json\` each) directly — but never write to them by hand.
 
 ## Reading the conversations on the board
 Every dispatched ticket has a worker conversation on the agent server (\`$AGENT_SERVER_URL\`, session key in \`$SESSION_API_KEY\` where the environment provides them; the CLI above already knows how to reach it). Beyond \`conversation\`:

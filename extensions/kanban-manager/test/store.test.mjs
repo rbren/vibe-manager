@@ -8,7 +8,7 @@
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
+import { readFileSync, writeFileSync, rmSync, mkdtempSync, mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -203,8 +203,7 @@ test("board mutations: create, append, reopen, verify, reorder", async () => {
   await assert.rejects(() => store.createTicket(wsId, "   "), /empty/);
 
   // A user entry on a finished ticket reopens it at the bottom of pending.
-  await store.mutateBoard(wsId, (b) => {
-    const t = b.tickets.find((x) => x.id === t1.id);
+  await store.mutateTicket(wsId, t1.id, (t) => {
     t.status = "finished";
     t.finished_at = 1;
   });
@@ -214,9 +213,7 @@ test("board mutations: create, append, reopen, verify, reorder", async () => {
   assert.equal(reopened.entries.length, 2);
 
   // in_progress must NOT be reopened.
-  await store.mutateBoard(wsId, (b) => {
-    b.tickets.find((x) => x.id === t2.id).status = "in_progress";
-  });
+  await store.mutateTicket(wsId, t2.id, (t) => { t.status = "in_progress"; });
   const busy = await store.appendEntry(wsId, t2.id, "extra context");
   assert.equal(busy.status, "in_progress");
 
@@ -227,9 +224,7 @@ test("board mutations: create, append, reopen, verify, reorder", async () => {
   assert.equal(verified.status, "verified");
 
   // Manager entries never reopen.
-  await store.mutateBoard(wsId, (b) => {
-    b.tickets.find((x) => x.id === t1.id).status = "needs_input";
-  });
+  await store.mutateTicket(wsId, t1.id, (t) => { t.status = "needs_input"; });
   const mgr = await store.appendEntry(wsId, t1.id, "status", "manager");
   assert.equal(mgr.status, "needs_input", "manager entries do not reopen");
 
@@ -392,45 +387,51 @@ test("a write overlapping a submit keeps both changes", async () => {
   );
 });
 /* The browser is not the only writer: the automation's mechanical transitions
-   and the manager's `vibectl patch` write the same board.json from the shell,
-   and no lock can span the file API. A shell write that lands inside the
-   browser's read-modify-write window used to disappear — and so did a ticket
-   the user had just added, when the shell writer was the one to write last.
+   and the manager's `vibectl patch` write the same tickets from the shell, and
+   no lock can span the file API. While the board was one document, a shell
+   write landing inside the browser's read-modify-write window disappeared —
+   and so did a ticket the user had just added, when the shell wrote last.
 
-   Both interleavings are driven here by writing board.json directly, which is
-   exactly what the shell side does. */
+   Per-ticket files remove the shared document. These tests drive the shell
+   side by writing ticket files directly, exactly as vibestore.py does. */
 
-function shellWrite(wsId, mutate) {
-  const path = `${ROOT}/workspaces/${wsId}/board.json`;
-  const board = JSON.parse(readFileSync(path, "utf8"));
-  mutate(board);
-  board.rev = (board.rev || 0) + 1;
-  board.writer = "shell";
-  writeFileSync(path, JSON.stringify(board, null, 2));
+function shellTicketPath(wsId, id) {
+  return `${ROOT}/workspaces/${wsId}/tickets/${id}/ticket.json`;
 }
 
-function shellTicket(id) {
-  return {
+function shellWriteTicket(wsId, id, mutate) {
+  const path = shellTicketPath(wsId, id);
+  const ticket = JSON.parse(readFileSync(path, "utf8"));
+  mutate(ticket);
+  ticket.rev = (ticket.rev || 0) + 1;
+  ticket.writer = "shell";
+  writeFileSync(path, JSON.stringify(ticket, null, 2));
+}
+
+function shellCreateTicket(wsId, id) {
+  const path = shellTicketPath(wsId, id);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({
     id, status: "pending", title: null, sort_order: 99, conversation_id: null,
     pr_url: null, manager_note: null, dispatched_entry_count: 0,
     created_at: 1, updated_at: 1, finished_at: null, verified_at: null,
     entries: [{ id: `e${id}`, author: "user", body: id, created_at: 1 }],
     attachments: [],
-  };
+  }, null, 2));
 }
 
-/** A host that runs `hook` once, right after the first board.json read
-    (`after-read`) or right after the first board.json write (`after-write`). */
+/** A host that runs `hook` once, right after the first ticket read
+    (`after-read`) or right after the first ticket write (`after-write`). */
 function racingHost(when, hook) {
   const real = makeHost();
   let fired = false;
   return {
     agentServer: {
       async request(opts) {
-        const board = opts.path.includes("board.json");
+        const ticket = opts.path.includes("ticket.json");
         const kind = opts.path.startsWith("/api/file/upload") ? "after-write" : "after-read";
         const res = await real.agentServer.request(opts);
-        if (board && !fired && kind === when) {
+        if (ticket && !fired && kind === when) {
           fired = true;
           hook();
         }
@@ -442,55 +443,71 @@ function racingHost(when, hook) {
 
 test("a shell write during a browser mutation is not clobbered", async () => {
   const wsId = newId();
-  await new Store(makeHost(), ROOT).createTicket(wsId, "existing");
+  const existing = await new Store(makeHost(), ROOT).createTicket(wsId, "existing");
 
   // The manager patches a ticket while we are preparing our own write.
-  const host = racingHost("after-read", () =>
-    shellWrite(wsId, (b) => {
-      b.tickets[0].status = "in_progress";
-      b.tickets.push(shellTicket("frommanager"));
-    }));
+  const host = racingHost("after-read", () => {
+    shellWriteTicket(wsId, existing.id, (t) => { t.status = "in_progress"; });
+    shellCreateTicket(wsId, "frommanager");
+  });
 
-  const created = await new Store(host, ROOT).createTicket(wsId, "mine");
+  const created = await new Store(host, ROOT).appendEntry(wsId, existing.id, "mine", "user");
 
   const board = await new Store(makeHost(), ROOT).readBoard(wsId);
   const ids = board.tickets.map((t) => t.id);
-  assert.ok(ids.includes(created.id), "the browser's ticket is on the board");
   assert.ok(ids.includes("frommanager"), "the shell's ticket was not clobbered");
-  assert.equal(board.tickets[0].status, "in_progress", "the shell's patch survived");
-  assert.equal(
-    ids.filter((id) => id === created.id).length, 1,
-    "the retried mutation is applied exactly once",
-  );
+  const patched = board.tickets.find((t) => t.id === existing.id);
+  assert.ok(patched.entries.some((e) => e.body === "mine"), "the browser's entry landed");
+  assert.equal(patched.status, "in_progress", "the shell's patch survived");
+  assert.equal(created.id, existing.id);
 });
 
 test("a browser mutation clobbered by a shell write is re-applied", async () => {
   const wsId = newId();
   const store = new Store(makeHost(), ROOT);
-  await store.createTicket(wsId, "existing");
-  const stale = await store.readBoard(wsId);
+  const existing = await store.createTicket(wsId, "existing");
+  const stale = await store.readTicket(wsId, existing.id);
 
-  // The manager writes a board it read BEFORE our upload: our ticket is gone
-  // from disk the instant after we wrote it.
+  /* The manager writes a ticket it read BEFORE our upload: our entry is gone
+     from disk the instant after we wrote it. It sets conversation_id rather
+     than a status, so the assertion below measures only whether the racing
+     write survived — a status change would legitimately be undone by the
+     reopen rule, which this test is not about. */
   const host = racingHost("after-write", () => {
-    const path = `${ROOT}/workspaces/${wsId}/board.json`;
-    stale.tickets[0].status = "finished";
+    stale.conversation_id = "conv-shell";
     stale.rev = (stale.rev || 0) + 1;
     stale.writer = "shell";
-    writeFileSync(path, JSON.stringify(stale, null, 2));
+    writeFileSync(shellTicketPath(wsId, existing.id), JSON.stringify(stale, null, 2));
   });
+
+  await new Store(host, ROOT).appendEntry(wsId, existing.id, "mine", "user");
+
+  const ticket = await store.readTicket(wsId, existing.id);
+  assert.ok(ticket.entries.some((e) => e.body === "mine"),
+    "the entry the user added survives the clobber");
+  assert.equal(ticket.conversation_id, "conv-shell", "the shell's change is kept too");
+});
+
+test("a new ticket cannot be dropped by a concurrent write to another", async () => {
+  const wsId = newId();
+  const store = new Store(makeHost(), ROOT);
+  const existing = await store.createTicket(wsId, "existing");
+
+  // The shell patches a DIFFERENT ticket while the browser creates one.
+  const host = racingHost("after-read", () =>
+    shellWriteTicket(wsId, existing.id, (t) => { t.status = "in_progress"; }));
 
   const created = await new Store(host, ROOT).createTicket(wsId, "mine");
 
   const board = await store.readBoard(wsId);
-  const ids = board.tickets.map((t) => t.id);
-  assert.ok(ids.includes(created.id), "the ticket the user added survives the clobber");
-  assert.equal(board.tickets[0].status, "finished", "the shell's change is kept too");
+  const byId = Object.fromEntries(board.tickets.map((t) => [t.id, t]));
+  assert.ok(byId[created.id], "the ticket the user added is on the board");
+  assert.equal(byId[existing.id].status, "in_progress", "the shell's patch survived");
 });
 
 /* The other writer in production is automation/vibestore.py, so pair the two
-   real implementations: they have to agree on the rev/writer protocol or a
-   card added while the manager patches disappears again. */
+   real implementations: they have to agree on the layout and the rev/writer
+   protocol or a card added while the manager patches disappears again. */
 test("the automation's own store code cannot drop a ticket added mid-patch", async () => {
   const wsId = newId();
   const store = new Store(makeHost(), ROOT);
@@ -517,12 +534,25 @@ test("the automation's own store code cannot drop a ticket added mid-patch", asy
   assert.equal(byId[existing.id].manager_note, "Worker dispatched");
 });
 
-test("board writes advance a revision so racing writers can be detected", async () => {
+test("ticket writes advance a revision so racing writers can be detected", async () => {
   const wsId = newId();
   const store = new Store(makeHost(), ROOT);
-  await store.createTicket(wsId, "one");
-  const first = await store.readBoard(wsId);
-  await store.createTicket(wsId, "two");
-  const second = await store.readBoard(wsId);
+  const t = await store.createTicket(wsId, "one");
+  const first = await store.readTicket(wsId, t.id);
+  await store.appendEntry(wsId, t.id, "two", "user");
+  const second = await store.readTicket(wsId, t.id);
   assert.equal(second.rev, first.rev + 1, "each write bumps rev once");
+});
+
+test("the board is rebuilt from every ticket directory", async () => {
+  const wsId = newId();
+  const store = new Store(makeHost(), ROOT);
+  const made = [];
+  for (let i = 0; i < 5; i++) made.push(await store.createTicket(wsId, `t${i}`));
+  const board = await store.readBoard(wsId);
+  assert.equal(board.tickets.length, 5, "every ticket file is listed");
+  assert.deepEqual(
+    board.tickets.map((t) => t.id).sort(),
+    made.map((t) => t.id).sort(),
+  );
 });

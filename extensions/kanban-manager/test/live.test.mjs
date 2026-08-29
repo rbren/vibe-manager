@@ -70,10 +70,13 @@ function firstConversationId() {
   const glob = "/root/.openhands/vibe-manager/workspaces";
   if (!existsSync(glob)) return null;
   for (const dir of readdirSync(glob)) {
-    const board = `${glob}/${dir}/board.json`;
-    if (!existsSync(board)) continue;
-    for (const t of JSON.parse(readFileSync(board, "utf8")).tickets) {
-      if (t.conversation_id) return t.conversation_id;
+    const tickets = `${glob}/${dir}/tickets`;
+    if (!existsSync(tickets)) continue;
+    for (const id of readdirSync(tickets)) {
+      const file = `${tickets}/${id}/ticket.json`;
+      if (!existsSync(file)) continue;
+      const ticket = JSON.parse(readFileSync(file, "utf8"));
+      if (ticket.conversation_id) return ticket.conversation_id;
     }
   }
   return null;

@@ -111,6 +111,8 @@ function hostWithStore({
   /* Awaited before a download is served, so a test can hold a read open and
      make a response land after something else happened. */
   beforeRead = null,
+  /* The same, for a directory listing — the read the board is assembled from. */
+  beforeList = null,
   /* The agent server's LLM profiles, which fill the request-settings picker. */
   profiles = { profiles: [], active_profile: null },
 } = {}) {
@@ -123,7 +125,6 @@ function hostWithStore({
         if (path === "/api/file/home") return { home };
         if (path === "/api/profiles") return profiles;
         if (path === "/api/workspaces") return workspaces;
-        if (path.startsWith("/api/file/search_subdirs")) return { items: subdirs };
         if (path.startsWith("/api/automation/v1")) {
           const rest = path.slice("/api/automation/v1".length);
           if (method === "POST" && rest === "") return { id: createdAutomationId };
@@ -187,6 +188,30 @@ function hostWithStore({
           const served = structuredClone(disk.get(target));
           if (beforeRead) await beforeRead(target);
           return served;
+        }
+        if (path.startsWith("/api/file/search_subdirs")) {
+          // Outside the store this listing is the workspace picker walking the
+          // agent server's workspace parents.
+          if (!filePath(path).startsWith(`${home}/.openhands/vibe-manager`)) {
+            return { items: subdirs };
+          }
+          // Tickets are enumerated by listing directories, so the fake disk
+          // has to derive the immediate child dirs of `path` from its keys.
+          const dir = `${filePath(path)}/`;
+          const names = new Set();
+          for (const key of disk.keys()) {
+            if (!key.startsWith(dir)) continue;
+            const rest = key.slice(dir.length);
+            if (rest.includes("/")) names.add(rest.split("/")[0]);
+          }
+          if (!names.size && ![...disk.keys()].some((k) => k.startsWith(dir))) {
+            const err = new Error(`404 not found: ${dir}`);
+            err.status = 404;
+            throw err;
+          }
+          const items = [...names].map((name) => ({ name }));
+          if (beforeList) await beforeList(filePath(path));
+          return { items, next_page_id: null };
         }
         if (path.startsWith("/api/file/create_directory")) return {};
         if (path.startsWith("/api/file/upload")) {
@@ -261,14 +286,10 @@ describe("mount", () => {
       home,
       files: {
         [`${root}/index.json`]: { workspaces: [workspace] },
-        [`${root}/workspaces/w1/board.json`]: {
-          tickets: [
-            {
-              id: "t1",
-              status: "pending",
-              entries: [{ id: "e1", author: "user", body: "hello", created_at: 1 }],
-            },
-          ],
+        [`${root}/workspaces/w1/tickets/t1/ticket.json`]: {
+          id: "t1",
+          status: "pending",
+          entries: [{ id: "e1", author: "user", body: "hello", created_at: 1 }],
         },
       },
     });
@@ -278,8 +299,9 @@ describe("mount", () => {
 
     await waitFor(() => container.textContent.includes("hello"));
     assert.ok(
-      calls.some((c) => c.path.includes(encodeURIComponent(`${root}/workspaces/w1/board.json`))),
-      "board read from the store path under the resolved home",
+      calls.some((c) => c.path.includes(
+        encodeURIComponent(`${root}/workspaces/w1/tickets/t1/ticket.json`))),
+      "ticket read from the store path under the resolved home",
     );
     dispose();
   });
@@ -481,16 +503,17 @@ describe("mount", () => {
       home,
       files: {
         [`${root}/index.json`]: { workspaces: [workspace] },
-        [`${root}/workspaces/w1/board.json`]: { tickets: [] },
+        [`${root}/workspaces/w1/tickets/`]: {},
       },
     });
 
     const container = makeContainer();
     const dispose = mountBoard({ container, path: "demo", navigate: () => {}, host });
 
-    // Resolving the name to w1 and reading that board is the whole behaviour.
+    // Resolving the name to w1 and listing its tickets is the whole behaviour.
     await waitFor(() =>
-      calls.some((c) => c.path.includes(encodeURIComponent(`${root}/workspaces/w1/board.json`))),
+      calls.some((c) => c.path.startsWith("/api/file/search_subdirs")
+        && c.path.includes(encodeURIComponent(`${root}/workspaces/w1/tickets`))),
     );
     dispose();
   });
@@ -502,7 +525,7 @@ describe("mount", () => {
   describe("submitting a new request", () => {
     const home = "/home/tester";
     const root = `${home}/.openhands/vibe-manager`;
-    const boardPath = `${root}/workspaces/w1/board.json`;
+    const ticketsDir = `${root}/workspaces/w1/tickets`;
     const workspace = { id: "w1", name: "demo", path: "/git/demo", max_concurrent: 2 };
 
     async function mountWithComposer(opts = {}) {
@@ -511,7 +534,7 @@ describe("mount", () => {
         home,
         files: {
           [`${root}/index.json`]: { workspaces: [workspace] },
-          [boardPath]: { version: 1, workspace_id: "w1", tickets: [] },
+          [`${ticketsDir}/`]: {},
         },
         ...opts,
       });
@@ -520,12 +543,16 @@ describe("mount", () => {
       /* The composer is in the initial markup, so waiting for it would race
          the workspace lookup and submit into a board that isn't open yet. */
       await waitFor(() =>
-        ctx.calls.some((c) => c.path.includes(encodeURIComponent(boardPath))),
+        ctx.calls.some((c) => c.path.startsWith("/api/file/search_subdirs")
+          && c.path.includes(encodeURIComponent(ticketsDir))),
       );
       return { ...ctx, container, dispose };
     }
 
-    const written = (disk) => disk.get(boardPath).tickets;
+    // Tickets are separate files now, so collect them off the fake disk.
+    const written = (disk) => [...disk.entries()]
+      .filter(([k]) => k.startsWith(`${ticketsDir}/`) && k.endsWith("/ticket.json"))
+      .map(([, v]) => v);
 
     /* linkedom has no KeyboardEvent constructor, so carry the fields the
        handler actually reads on a plain Event. */
@@ -649,10 +676,12 @@ describe("mount", () => {
         home,
         files: {
           [`${root}/index.json`]: { workspaces: [workspace] },
-          [boardPath]: { version: 1, workspace_id: "w1", tickets: [] },
+          [`${ticketsDir}/`]: {},
         },
-        beforeRead: async (target) => {
-          if (target === boardPath && ++boardReads === 1) await held;
+        // The board is now assembled from a listing, so that is the read to
+        // hold open to reproduce a stale poll landing after a submit.
+        beforeList: async (target) => {
+          if (target === ticketsDir && ++boardReads === 1) await held;
         },
       });
       const container = makeContainer();

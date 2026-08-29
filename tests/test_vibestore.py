@@ -171,15 +171,15 @@ def main() -> int:
 
         print("\natomic writes")
         check("no .tmp files left", list((tmp / "store").rglob("*.tmp")), [])
-        raw = json.loads((tmp / "store" / "workspaces" / ws_id / "board.json").read_text())
-        check("board file has version", raw["version"], 1)
-        check("board file has workspace_id", raw["workspace_id"], ws_id)
+        raw = json.loads(vibestore.ticket_path(ws_id, "t1").read_text())
+        check("ticket file keeps its id", raw["id"], "t1")
+        check("ticket file is revisioned", isinstance(raw.get("rev"), int), True)
 
         print("\ncorrupt file surfaces loudly")
-        bad = tmp / "store" / "workspaces" / "bad" / "board.json"
+        bad = vibestore.ticket_path("bad", "t1")
         bad.parent.mkdir(parents=True, exist_ok=True)
         bad.write_text("{not json")
-        check_raises("corrupt board raises", lambda: vibestore.read_board("bad"), RuntimeError)
+        check_raises("corrupt ticket raises", lambda: vibestore.read_board("bad"), RuntimeError)
 
         print("\ngit helpers (real repositories)")
         origin = make_origin(tmp)
