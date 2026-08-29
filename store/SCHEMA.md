@@ -86,7 +86,7 @@ fields:
 - `writer` — a random token identifying the write that produced this state.
 
 Both writers follow the same protocol (`Store.mutateDoc` in
-`extensions/vibe-board/src/store.js`, `_mutate_document` in
+`extensions/kanban-manager/src/store.js`, `_mutate_document` in
 `automation/vibestore.py`): read, apply the mutation, re-read and abandon the
 attempt if `rev` moved, write, then re-read and re-apply the mutation on the
 fresh document if someone else's write won. The shell side additionally holds

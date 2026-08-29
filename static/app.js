@@ -133,7 +133,7 @@ async function loadWorkspaces() {
     for (const a of avail) {
       const o = document.createElement("option");
       o.value = a.path;
-      o.textContent = `${a.name}${a.is_git ? "" : "  (not git)"}`;
+      o.textContent = a.name;
       og.appendChild(o);
     }
     sel.appendChild(og);

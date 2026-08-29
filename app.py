@@ -53,7 +53,7 @@ VERIFIED = "verified"
 
 app = FastAPI(title="Vibe Work Manager")
 
-# The Canvas Extension build of the SPA (extensions/vibe-board) runs on the
+# The Canvas Extension build of the SPA (extensions/kanban-manager) runs on the
 # Canvas origin, so its API calls are cross-origin. Allow only the Canvas
 # origins, and allow credentials so nginx basic auth rides along.
 CORS_ORIGINS = [

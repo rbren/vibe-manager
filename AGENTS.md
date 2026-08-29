@@ -23,8 +23,11 @@ via /etc/nginx/.htpasswd).
     agent-server workspace parents (e.g. /root/git/*) + agent-server-
     registered workspaces; `selected` = already-onboarded ones from vibe.db.
     The SPA picker deliberately shows ONLY the workspace name (no directory
-    path like /root/git/foo ŌĆö user request 2026-05); option values are still
-    full paths.
+    path like /root/git/foo ŌĆö user request 2026-05, no `(not git)` annotation
+    ŌĆö user request 2026-05-21); option values are still full paths. Both
+    pickers (static/app.js and the extension) must stay in sync. The extension
+    never had the `is_git` flag at all, so every candidate there was labelled
+    "(not git)".
   - Manager API (`/api/manager/...`): board snapshot, ticket PATCH
     (status/conversation_id/pr_url/manager_note/dispatched_entry_count/
     append_entry), `POST /api/manager/conversations` to start/follow-up worker
@@ -387,10 +390,20 @@ via /etc/nginx/.htpasswd).
 
 ## Canvas Extensions
 
-The board now also ships as a Canvas Extension in `extensions/vibe-board`
+The board now also ships as a Canvas Extension in `extensions/kanban-manager`
 (see that package's README). Canvas extensions are **frontend only** (host
 API = `registerPage` / `navigate` / `agentServer.request`; no extension-owned
 server code), which is why the FastAPI service could not come along.
+
+> **Renamed 2026-05-21 (user request): `vibe-board` → `kanban-manager`.**
+> Manifest name, package dir, page route (`/extensions/kanban-manager/board`)
+> and install path (`~/.openhands/canvas-extensions/installed/kanban-manager`)
+> all moved; the upstream copy at DevinVinson/canvas-extensions was renamed in
+> the same change. What deliberately did NOT move: the store root
+> (`~/.openhands/vibe-manager`, shared with the automation's shell writers),
+> the `.vibe-ext` CSS scope class, and the automation name
+> (`Vibe Manager — <ws> (<id>)`, which app.py also bootstraps). Renaming any of
+> those orphans live boards or duplicates automations.
 
 **The extension no longer talks to app.py at all.** Board state is JSON on
 disk under `~/.openhands/vibe-manager/` (`index.json` +
@@ -447,7 +460,7 @@ file API — so there is nothing to configure and no second service to run:
   looks like a lost write and gets retried over. A residual window remains
   between the last pre-write read and the upload landing — the file API has no
   conditional write — but it is one round trip instead of the whole mutation.
-  Tests: `node --test extensions/vibe-board/test/store.test.mjs` (drives the
+  Tests: `node --test extensions/kanban-manager/test/store.test.mjs` (drives the
   real file API AND the real `vibestore.py` as the racing writer) and
   `python3 tests/test_board_store_concurrency.py`.
 - **A board read that spans a write is discarded** (`refreshBoard` compares
@@ -459,18 +472,50 @@ file API — so there is nothing to configure and no second service to run:
   snapshot`, not `vibectl.py snapshot --workspace-id X`, which argparse
   rejects).
 
+- **The extension creates its own manager automation** (`src/manager.js`,
+  user request 2026-05-21) — the last thing that still needed app.py's
+  `ensure_manager_automation`. The top-right control is orange **"Start
+  manager"** whenever the workspace has no automation, points at one the
+  backend 404s on (`missing` in `live.automationStatus`), or has one that is
+  disabled; next to a live manager sits **"Stop manager"**
+  (`PATCH {"enabled": false}` — the automation is kept so its run history and
+  id survive a restart). Details worth knowing before touching it:
+  - `build.mjs` compiles `automation/*.py` into the bundle
+    (`__VIBE_AUTOMATION__`, same trick as `__VIBE_CSS__`), because the Canvas
+    machine has no vibe-manager checkout. `automation/` stays the source of
+    truth; the bundle grew ~90 KB → ~151 KB. **Re-run the build after editing
+    automation/** or Start manager ships stale code.
+  - The tarball is tar+gzip'd in the browser (`tar()` + `CompressionStream`).
+    Sizes in the ustar header are BYTE counts — `main.py` is full of em
+    dashes, and a character count truncates the file and desynchronises every
+    later header. `test/manager.test.mjs` checks the archive with real GNU tar
+    and uploads it to the real automation backend.
+  - `POST /v1/uploads` must be a **raw `fetch`** with the backend credentials
+    from `resolveBackendCredentials`: the host client JSON-stringifies every
+    body that isn't `FormData`, which corrupts the gzip bytes. (Its 1 MB cap
+    is no problem — the archive is ~15 KB.) The JSON calls around it go
+    through `host.agentServer.request` like the rest of `/api/automation/v1`.
+  - Start reuses an automation with the same name (`Vibe Manager — <ws>
+    (<id>)`, `automationName()`), so a workspace app.py already bootstrapped
+    is refreshed rather than duplicated, and always re-uploads the tarball.
+  - `config.json` carries `store_dir` (the resolved store root), so the
+    automation writes the same board the tab does even if it runs as another
+    user. `agent_server` is only a fallback: the run environment's
+    `AGENT_SERVER_URL` wins.
+
 Operational notes for the extension:
 
-- **Build tooling lives in `extensions/`, one level ABOVE `vibe-board/`.**
+- **Build tooling lives in `extensions/`, one level ABOVE `kanban-manager/`.**
   Installing from a local path copies the package directory verbatim, so a
-  `node_modules/` inside `vibe-board/` lands in the agent-server install
+  `node_modules/` inside `kanban-manager/` lands in the agent-server install
   (38 MB vs 164 KB — this was hit and fixed). `cd extensions && npm test`.
   `npm test` builds and runs the `*.test.js` bundle tests ONLY; the `*.mjs`
-  suites (store, live) hit the real agent server, so run them explicitly:
-  `cd extensions && node --test vibe-board/test/*.mjs`. They write to a temp
+  suites (store, live, manager) hit the real agent server and automation
+  backend, so run them explicitly:
+  `cd extensions && node --test kanban-manager/test/*.mjs`. They write to a temp
   store root (`mkdtemp`), never the real `~/.openhands/vibe-manager` — keep it
   that way, they create and delete workspaces.
-- `extensions/vibe-board/dist/extension.js` is **committed**: the agent-server
+- `extensions/kanban-manager/dist/extension.js` is **committed**: the agent-server
   installs by copying files and never runs a build.
 - `static/style.css` stays the single source of truth. `build.mjs` scopes every
   selector under `.vibe-ext` and rewrites `html`/`:root`/`body` and
@@ -479,7 +524,7 @@ Operational notes for the extension:
   `--vibe-rem: 1.2rem`, replacing the SPA's `html { font-size: 120% }` (an
   extension must not resize the host page). A test asserts 0 unscoped
   selectors — if you add a global selector to style.css, expect it to fail.
-- `static/index.html`'s body is duplicated in `extensions/vibe-board/src/markup.js`.
+- `static/index.html`'s body is duplicated in `extensions/kanban-manager/src/markup.js`.
   **Change both.**
 - No CORS is involved any more: every request goes through the host's
   `agentServer.request`, same-origin with Canvas.
@@ -491,7 +536,7 @@ Operational notes for the extension:
   server — the ingress rejects the agent-server key on its own routes.
   Verify a deploy by diffing the served bundle against `dist/extension.js`.
 - Page route is `/extensions/<extension-name>/<page path>`, e.g.
-  `/extensions/vibe-board/board` — NOT the bare `/board` from the manifest.
+  `/extensions/kanban-manager/board` — NOT the bare `/board` from the manifest.
 - Testing the bundle under linkedom: it has no setter for
   `HTMLSelectElement.value`, so `installDom()` adds one; without it the mount
   throws and the board silently never renders. Drive tests through a
@@ -519,13 +564,15 @@ verified against source + live API probes on this host:
   `navigate`, and `agentServer.request({method, path, body})`. There is NO
   hook to run extension-owned server code, so vibe-manager's FastAPI process
   cannot come along; its logic must move into the bundle or the automation.
-- **`agentServer.request` only reaches the agent-server**, and only
-  root-relative paths (it throws on non-`/` and on `//`). It is NOT a generic
-  proxy — the automation backend is a *separate* service, so the extension
-  must call `/api/automation/...` with its own `fetch` (works here because the
-  ingress on :8000 routes `/api/automation/*` to :18001 and the agent-server
-  and automation share one session key — verified: both keys are identical and
-  both return 200).
+- **`agentServer.request` targets the registered backend host**, and only
+  root-relative paths (it throws on non-`/` and on `//`). Refined 2026-05-21:
+  because that host is the *ingress* (:8000), which routes `/api/automation/*`
+  to the automation backend (:18001) and shares one session key with the agent
+  server, `/api/automation/v1/...` DOES work through the host client — that is
+  how `live.js` and `manager.js` talk to it. The one thing it cannot carry is
+  a binary body: `HttpClient` JSON-stringifies anything that isn't `FormData`,
+  so tarball uploads and attachment downloads issue their own `fetch` with the
+  credentials from `resolveBackendCredentials`.
 - **There is no KV/database in the agent-server.** Its only persistence is
   purpose-built file stores (`persistence/store.py`:
   settings/secrets/workspaces/profiles) — no generic key-value endpoint

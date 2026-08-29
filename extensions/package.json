@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "description": "Build tooling for the vibe Agent Canvas extensions.",
-  "comment": "Dependencies live here, one level ABOVE each extension package root: installing an extension from a local path copies that directory verbatim, so a node_modules inside vibe-board/ would land in the agent-server install (38 MB of build-only deps).",
+  "comment": "Dependencies live here, one level ABOVE each extension package root: installing an extension from a local path copies that directory verbatim, so a node_modules inside kanban-manager/ would land in the agent-server install (38 MB of build-only deps).",
   "scripts": {
-    "build": "node vibe-board/build.mjs",
-    "test": "npm run build && node --test vibe-board/test/*.test.js",
-    "validate": "npm run build && node validate-extension.mjs vibe-board"
+    "build": "node kanban-manager/build.mjs",
+    "test": "npm run build && node --test kanban-manager/test/*.test.js",
+    "validate": "npm run build && node validate-extension.mjs kanban-manager"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",
