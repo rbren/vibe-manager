@@ -15,15 +15,17 @@ than assuming a user: the file API needs absolute paths and does not expand
   index.json                      # workspace registry
   workspaces/<ws_id>/board.json   # one document per workspace
   attachments/<att_id>/<filename> # attachment bytes (unchanged layout)
+  bin/<ws_id>/                    # that workspace's manager CLI + config.json
 ```
 
 ## Why one document per workspace
 
-The board is always read whole (the SPA polls the full board every 5s) and
-written by one actor at a time. A single document makes a read one request
-instead of one-per-ticket, and makes a write atomic by construction — there is
+The board is always read whole (the SPA polls the full board every 5s). A
+single document makes a read one request instead of one-per-ticket, and leaves
 no partial-board state to observe. Largest real board is 84.6 KB; a full
-round-trip through the file API measures ~38 ms, well inside the 5s poll.
+round-trip through the file API measures ~38 ms, well inside the 5s poll. The
+cost is that every write is a read-modify-write shared by several actors — see
+Concurrency.
 
 ## index.json
 
@@ -74,8 +76,25 @@ absolute on this machine so dispatched workers can read files in place.
 
 ## Concurrency
 
-Single-user, low-scale. Writers are the extension (user actions) and the
-manager automation (once a minute). Both do read-modify-write of one board
-document. A lost update is possible in principle but requires edits inside the
-same few-millisecond window; the previous SQLite design serialized these, so
-this is a deliberate, documented trade-down rather than an oversight.
+Writers are the extension (user actions, through the file API), the manager
+automation (once a minute per workspace) and the manager agent's `vibectl`.
+Every one of them read-modify-writes a whole document, and no lock reaches
+across the file API, so `index.json` and every `board.json` carry two extra
+fields:
+
+- `rev` — incremented on every write.
+- `writer` — a random token identifying the write that produced this state.
+
+Both writers follow the same protocol (`Store.mutateDoc` in
+`extensions/vibe-board/src/store.js`, `_mutate_document` in
+`automation/vibestore.py`): read, apply the mutation, re-read and abandon the
+attempt if `rev` moved, write, then re-read and re-apply the mutation on the
+fresh document if someone else's write won. The shell side additionally holds
+an `flock` on `<document>.lock`, which serializes the automation against the
+manager CLI, and the extension chains its own cycles (`Store.serialize`) so
+one tab's actions queue instead of racing each other.
+
+Untracked writers must preserve `rev`/`writer` and bump `rev`, or they will be
+treated as a lost write and retried over. A card added by the user used to
+disappear here: the manager patched a ticket from a board it had read a moment
+before the card existed, and wrote it straight back.

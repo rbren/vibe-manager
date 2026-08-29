@@ -11,6 +11,8 @@ automation runs.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import shutil
@@ -39,16 +41,22 @@ def now() -> float:
 
 
 def install_cli(workspace_id: str, workspace_path: str) -> str:
-    """Copy the CLI to a stable location and return its path.
+    """Copy the CLI to a stable per-workspace location and return its path.
 
     The automation tarball is unpacked into a per-run directory that may be
     cleaned up once the run ends, but the manager conversation it starts keeps
     working long after that — so the CLI it was told to call has to live
     somewhere that outlives the run. Refreshed every run, so a redeployed
     automation updates it.
+
+    The install is scoped to the workspace because every workspace's cron
+    re-installs once a minute: one shared config.json meant whichever cron ran
+    last decided which board every manager's `vibectl` acted on, so managers
+    read other projects' boards and patches against their own tickets failed
+    with "ticket not found".
     """
     src = Path(__file__).parent
-    bin_dir = store_root() / "bin"
+    bin_dir = store_root() / "bin" / workspace_id
     bin_dir.mkdir(parents=True, exist_ok=True)
     for name in ("vibestore.py", "vibectl.py"):
         shutil.copy2(src / name, bin_dir / name)
@@ -60,6 +68,10 @@ def install_cli(workspace_id: str, workspace_path: str) -> str:
         "workspace_path": workspace_path,
         "store_dir": str(store_root()),
     }, indent=2))
+    # Retire the shared config a manager conversation from before this change
+    # may still be pointed at: without it that CLI reports a missing workspace
+    # instead of silently acting on whichever one was installed last.
+    (store_root() / "bin" / "config.json").unlink(missing_ok=True)
     return str(bin_dir / "vibectl.py")
 
 
@@ -86,12 +98,64 @@ def _write_json(path: Path, payload) -> None:
     tmp.replace(path)
 
 
+def _stamp(doc: dict, **fields) -> dict:
+    """Prepare a document for its next write. Mirrors store.js `stamp`."""
+    return {**doc, **fields, "rev": (doc.get("rev") or 0) + 1, "writer": new_id()}
+
+
+@contextlib.contextmanager
+def _locked(path: Path):
+    """Serialize the shell-side writers of one document."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = path.with_name(path.name + ".lock")
+    with open(lock, "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def _mutate_document(path: Path, read, write, mutate, attempts: int = 5):
+    """Read-modify-write `path`, re-applying `mutate` if another writer lands.
+
+    The browser writes these same documents through the agent server's file
+    API, which no local lock can reach, so the lock only serializes the shell
+    side and the revision check catches the browser. Without it a card the
+    user had just added was silently dropped by the next manager patch.
+    """
+    for _ in range(attempts):
+        with _locked(path):
+            doc = read()
+            base = doc.get("rev") or 0
+            result = mutate(doc)
+            if (read().get("rev") or 0) != base:
+                continue  # the browser wrote while we worked; start over
+            token = write(doc)
+            after = read()
+            # `rev > base + 1` means someone built on top of our write.
+            if after.get("writer") == token or (after.get("rev") or 0) > base + 1:
+                return result
+    raise RuntimeError(f"{path.name} is being written concurrently; retry")
+
+
+def index_path() -> Path:
+    return store_root() / "index.json"
+
+
 def read_index() -> dict:
-    return _read_json(store_root() / "index.json", {"version": 1, "workspaces": []})
+    return _read_json(index_path(), {"version": 1, "workspaces": []})
 
 
-def write_index(index: dict) -> None:
-    _write_json(store_root() / "index.json", {**index, "version": 1})
+def write_index(index: dict) -> str:
+    """Write the index and return the token identifying this write."""
+    stamped = _stamp(index, version=1)
+    _write_json(index_path(), stamped)
+    return stamped["writer"]
+
+
+def mutate_index(mutate):
+    return _mutate_document(index_path(), read_index, write_index, mutate)
 
 
 def get_workspace(ws_id: str) -> dict | None:
@@ -102,13 +166,14 @@ def get_workspace(ws_id: str) -> dict | None:
 
 
 def update_workspace(ws_id: str, **patch) -> dict:
-    index = read_index()
-    for ws in index.get("workspaces", []):
-        if ws.get("id") == ws_id:
-            ws.update(patch)
-            write_index(index)
-            return ws
-    raise KeyError(f"workspace {ws_id} not found")
+    def mutate(index: dict) -> dict:
+        for ws in index.get("workspaces", []):
+            if ws.get("id") == ws_id:
+                ws.update(patch)
+                return ws
+        raise KeyError(f"workspace {ws_id} not found")
+
+    return mutate_index(mutate)
 
 
 def board_path(ws_id: str) -> Path:
@@ -121,8 +186,21 @@ def read_board(ws_id: str) -> dict:
     return board
 
 
-def write_board(ws_id: str, board: dict) -> None:
-    _write_json(board_path(ws_id), {**board, "version": 1, "workspace_id": ws_id})
+def write_board(ws_id: str, board: dict) -> str:
+    """Write the board and return the token identifying this write."""
+    stamped = _stamp(board, version=1, workspace_id=ws_id)
+    _write_json(board_path(ws_id), stamped)
+    return stamped["writer"]
+
+
+def mutate_board(ws_id: str, mutate):
+    """Read, apply `mutate`, write back. Returns whatever `mutate` returns."""
+    return _mutate_document(
+        board_path(ws_id),
+        lambda: read_board(ws_id),
+        lambda board: write_board(ws_id, board),
+        mutate,
+    )
 
 
 def snapshot(ws_id: str) -> dict:
@@ -149,11 +227,33 @@ def patch_ticket(
         raise ValueError(f"bad status {status!r}; expected one of {list(STATUSES)}")
 
     stamp = now()
-    board = read_board(ws_id)
-    ticket = next((t for t in board["tickets"] if t["id"] == ticket_id), None)
-    if ticket is None:
-        raise KeyError(f"ticket {ticket_id} not found")
 
+    def mutate(board: dict) -> dict:
+        ticket = next((t for t in board["tickets"] if t["id"] == ticket_id), None)
+        if ticket is None:
+            raise KeyError(f"ticket {ticket_id} not found")
+        return _apply_ticket_patch(
+            ticket, stamp,
+            status=status, title=title, conversation_id=conversation_id, pr_url=pr_url,
+            manager_note=manager_note, dispatched_entry_count=dispatched_entry_count,
+            append_entry=append_entry,
+        )
+
+    return mutate_board(ws_id, mutate)
+
+
+def _apply_ticket_patch(
+    ticket: dict,
+    stamp: float,
+    *,
+    status: str | None,
+    title: str | None,
+    conversation_id: str | None,
+    pr_url: str | None,
+    manager_note: str | None,
+    dispatched_entry_count: int | None,
+    append_entry: str | None,
+) -> dict:
     touched = False
     if status is not None:
         if status == "finished" and ticket.get("status") != "finished":
@@ -195,7 +295,6 @@ def patch_ticket(
 
     if touched:
         ticket["updated_at"] = stamp
-    write_board(ws_id, board)
     return ticket
 
 

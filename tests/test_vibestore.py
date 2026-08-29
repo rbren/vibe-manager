@@ -258,7 +258,10 @@ def main() -> int:
 
         print("\nCLI install + invocation in a bare environment")
         cli = vibestore.install_cli(ws_id, str(project))
-        check("cli installed under the store", Path(cli).parent, tmp / "store" / "bin")
+        # Scoped to the workspace: every workspace's cron re-installs, and a
+        # shared config would repoint the other managers' CLIs.
+        check("cli installed under the store", Path(cli).parent,
+              tmp / "store" / "bin" / ws_id)
         for name in ("vibestore.py", "vibectl.py", "config.json"):
             check_true(f"{name} installed", (Path(cli).parent / name).exists())
         check_true("cli is executable", os.access(cli, os.X_OK))

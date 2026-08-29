@@ -8,11 +8,16 @@
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, rmSync, mkdtempSync } from "node:fs";
+import { readFileSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { Store, safeFilename, newId, isNotFound } from "../src/store.js";
+
+/** Repo root, so the tests can drive the automation's store code as well. */
+const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
 const AGENT_SERVER = process.env.VIBE_TEST_AGENT_SERVER || "http://127.0.0.1:18000";
 const KEY = process.env.OH_SESSION_API_KEYS_0
@@ -303,14 +308,14 @@ test("a caching client cannot lose a ticket between writes", async () => {
     },
   };
 
-  const store = new Store(caching);
+  const store = new Store(caching, ROOT);
   const ws = await store.selectWorkspace(`/git/cache-${newId()}`);
 
   await store.createTicket(ws.id, "first");
   await store.createTicket(ws.id, "second");
 
   // Read through a non-caching store so this asserts what is on disk.
-  const { tickets } = await new Store(real).getBoard(ws.id);
+  const { tickets } = await new Store(real, ROOT).getBoard(ws.id);
   const bodies = tickets.map((t) => t.entries[0].body).sort();
   assert.deepEqual(bodies, ["first", "second"], "neither write clobbered the other");
   assert.equal(served, 0, "board reads bypass the cache");
@@ -362,4 +367,139 @@ test("a write overlapping a submit keeps both changes", async () => {
     2,
     "the appended entry survived the concurrent create",
   );
+});
+/* The browser is not the only writer: the automation's mechanical transitions
+   and the manager's `vibectl patch` write the same board.json from the shell,
+   and no lock can span the file API. A shell write that lands inside the
+   browser's read-modify-write window used to disappear — and so did a ticket
+   the user had just added, when the shell writer was the one to write last.
+
+   Both interleavings are driven here by writing board.json directly, which is
+   exactly what the shell side does. */
+
+function shellWrite(wsId, mutate) {
+  const path = `${ROOT}/workspaces/${wsId}/board.json`;
+  const board = JSON.parse(readFileSync(path, "utf8"));
+  mutate(board);
+  board.rev = (board.rev || 0) + 1;
+  board.writer = "shell";
+  writeFileSync(path, JSON.stringify(board, null, 2));
+}
+
+function shellTicket(id) {
+  return {
+    id, status: "pending", title: null, sort_order: 99, conversation_id: null,
+    pr_url: null, manager_note: null, dispatched_entry_count: 0,
+    created_at: 1, updated_at: 1, finished_at: null, verified_at: null,
+    entries: [{ id: `e${id}`, author: "user", body: id, created_at: 1 }],
+    attachments: [],
+  };
+}
+
+/** A host that runs `hook` once, right after the first board.json read
+    (`after-read`) or right after the first board.json write (`after-write`). */
+function racingHost(when, hook) {
+  const real = makeHost();
+  let fired = false;
+  return {
+    agentServer: {
+      async request(opts) {
+        const board = opts.path.includes("board.json");
+        const kind = opts.path.startsWith("/api/file/upload") ? "after-write" : "after-read";
+        const res = await real.agentServer.request(opts);
+        if (board && !fired && kind === when) {
+          fired = true;
+          hook();
+        }
+        return res;
+      },
+    },
+  };
+}
+
+test("a shell write during a browser mutation is not clobbered", async () => {
+  const wsId = newId();
+  await new Store(makeHost(), ROOT).createTicket(wsId, "existing");
+
+  // The manager patches a ticket while we are preparing our own write.
+  const host = racingHost("after-read", () =>
+    shellWrite(wsId, (b) => {
+      b.tickets[0].status = "in_progress";
+      b.tickets.push(shellTicket("frommanager"));
+    }));
+
+  const created = await new Store(host, ROOT).createTicket(wsId, "mine");
+
+  const board = await new Store(makeHost(), ROOT).readBoard(wsId);
+  const ids = board.tickets.map((t) => t.id);
+  assert.ok(ids.includes(created.id), "the browser's ticket is on the board");
+  assert.ok(ids.includes("frommanager"), "the shell's ticket was not clobbered");
+  assert.equal(board.tickets[0].status, "in_progress", "the shell's patch survived");
+  assert.equal(
+    ids.filter((id) => id === created.id).length, 1,
+    "the retried mutation is applied exactly once",
+  );
+});
+
+test("a browser mutation clobbered by a shell write is re-applied", async () => {
+  const wsId = newId();
+  const store = new Store(makeHost(), ROOT);
+  await store.createTicket(wsId, "existing");
+  const stale = await store.readBoard(wsId);
+
+  // The manager writes a board it read BEFORE our upload: our ticket is gone
+  // from disk the instant after we wrote it.
+  const host = racingHost("after-write", () => {
+    const path = `${ROOT}/workspaces/${wsId}/board.json`;
+    stale.tickets[0].status = "finished";
+    stale.rev = (stale.rev || 0) + 1;
+    stale.writer = "shell";
+    writeFileSync(path, JSON.stringify(stale, null, 2));
+  });
+
+  const created = await new Store(host, ROOT).createTicket(wsId, "mine");
+
+  const board = await store.readBoard(wsId);
+  const ids = board.tickets.map((t) => t.id);
+  assert.ok(ids.includes(created.id), "the ticket the user added survives the clobber");
+  assert.equal(board.tickets[0].status, "finished", "the shell's change is kept too");
+});
+
+/* The other writer in production is automation/vibestore.py, so pair the two
+   real implementations: they have to agree on the rev/writer protocol or a
+   card added while the manager patches disappears again. */
+test("the automation's own store code cannot drop a ticket added mid-patch", async () => {
+  const wsId = newId();
+  const store = new Store(makeHost(), ROOT);
+  const existing = await store.createTicket(wsId, "existing");
+
+  const managerPatch = () => execFileSync(
+    "python3",
+    ["-c", [
+      "import sys; sys.path.insert(0, sys.argv[1])",
+      "import vibestore",
+      "vibestore.patch_ticket(sys.argv[2], sys.argv[3], status='in_progress',"
+      + " manager_note='Worker dispatched')",
+    ].join("\n"), `${REPO}/automation`, wsId, existing.id],
+    { env: { ...process.env, VIBE_STORE_DIR: ROOT }, stdio: "pipe" },
+  );
+
+  const created = await new Store(racingHost("after-read", managerPatch), ROOT)
+    .createTicket(wsId, "mine");
+
+  const board = await store.readBoard(wsId);
+  const byId = Object.fromEntries(board.tickets.map((t) => [t.id, t]));
+  assert.ok(byId[created.id], "the ticket the user added survives the manager patch");
+  assert.equal(byId[existing.id].status, "in_progress", "the manager's patch survives too");
+  assert.equal(byId[existing.id].manager_note, "Worker dispatched");
+});
+
+test("board writes advance a revision so racing writers can be detected", async () => {
+  const wsId = newId();
+  const store = new Store(makeHost(), ROOT);
+  await store.createTicket(wsId, "one");
+  const first = await store.readBoard(wsId);
+  await store.createTicket(wsId, "two");
+  const second = await store.readBoard(wsId);
+  assert.equal(second.rev, first.rev + 1, "each write bumps rev once");
 });

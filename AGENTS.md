@@ -406,6 +406,17 @@ file API — so there is nothing to configure and no second service to run:
 - Shell-only work (dispatch, git worktrees, mutating the store from the
   manager) lives in the automation: `automation/vibestore.py` +
   `automation/vibectl.py`, which must run in a completely bare environment.
+  - **The CLI is installed per workspace**, at
+    `<store>/bin/<ws_id>/vibectl.py` with its own `config.json`
+    (`install_cli`). It used to be one shared `bin/config.json`, which every
+    workspace's cron rewrote once a minute: a manager's `snapshot` then
+    returned another project's board and `patch` failed with "ticket not
+    found" (observed live 2026-08-29). The manager's shell inherits no
+    environment, so the workspace has to come from a file — it just must not
+    be a file the other workspaces share. Nothing may resolve "the current
+    workspace" from a shared default; `install_cli` deletes the legacy shared
+    config so an old CLI errors out instead of guessing. Tests:
+    `python3 tests/test_vibectl_workspace_isolation.py`.
 - Ticket text is in `entries[0].body`; there is no top-level `body` field.
 - **`/api/file/download` sends ETag/Last-Modified but no `Cache-Control`**, so
   browsers heuristically cache it (~10% of the file's age). `readJson` defeats
@@ -415,34 +426,38 @@ file API — so there is nothing to configure and no second service to run:
   the ticket created just before it. Attachment blobs are immutable and stay
   cacheable.
 - **Every write is a read-modify-write of the whole document, so writes are
-  serialized** (`Store.serialize`, a promise chain; `mutateBoard`,
-  `selectWorkspace` and `updateWorkspace` run through it). Two cycles in
-  flight at once — a second submit, an attachment upload, a drag-reorder —
-  used to have the later one download the board from before the earlier
-  upload and write that copy back, dropping the ticket just created (ticket
-  3f191ab9a7ff, "cards dont always show up in pending"): three concurrent
-  `createTicket` calls left ONE ticket on disk. There is no compare-and-set
-  in the file API, so not overlapping them is the fix; anything a mutation
-  calls must therefore NOT call `serialize` again (`readBoard`/`writeBoard`/
-  `readIndex`/`writeIndex` are deliberately unserialized). Cross-process
-  writers (the automation's `vibestore.py`) are still unprotected — its
-  read-modify-write window is sub-millisecond and atomic (write-temp + rename),
-  the browser's is a whole HTTP round trip.
+  serialized** (`Store.serialize`, a promise chain; `mutateBoard` and
+  `mutateIndex` run through it). Two cycles in flight at once — a second
+  submit, an attachment upload, a drag-reorder — used to have the later one
+  download the board from before the earlier upload and write that copy back,
+  dropping the ticket just created (ticket 3f191ab9a7ff, "cards dont always
+  show up in pending"): three concurrent `createTicket` calls left ONE ticket
+  on disk. Anything a mutation calls must therefore NOT call `serialize` again
+  (`readBoard`/`writeBoard`/`readIndex`/`writeIndex` are deliberately
+  unserialized).
+- **The writers outside the tab are caught by compare-and-retry instead**: the
+  automation's mechanical transitions and the manager's `vibectl patch`
+  read-modify-write the same documents from the shell, where no promise chain
+  reaches. `index.json`/`board.json` carry `rev` (bumped per write) and
+  `writer` (a token for the write that produced the state), and both
+  `Store.mutateDoc` and `vibestore._mutate_document` read → mutate → re-read
+  and start over if `rev` moved → write → re-read and re-apply if someone
+  else's write won. The shell side also flocks `<document>.lock` (automation
+  vs. manager CLI). Any new writer MUST keep both fields and bump `rev`, or it
+  looks like a lost write and gets retried over. A residual window remains
+  between the last pre-write read and the upload landing — the file API has no
+  conditional write — but it is one round trip instead of the whole mutation.
+  Tests: `node --test extensions/vibe-board/test/store.test.mjs` (drives the
+  real file API AND the real `vibestore.py` as the racing writer) and
+  `python3 tests/test_board_store_concurrency.py`.
 - **A board read that spans a write is discarded** (`refreshBoard` compares
   `store.writes` before/after): the 5s poll is usually in flight when the user
   submits, and that response predates the new ticket, so rendering it hides
   the card until the next poll. The write path does its own refresh.
-- **`bin/config.json` is shared by ALL workspaces** (`workspace_id`,
-  `workspace_path`, `store_dir`) and is rewritten on every workspace
-  bootstrap/refresh, so `vibectl.py`'s implicit workspace defaults are racy:
-  observed 2026-08-29 — two `snapshot` calls ~60 s apart from the
-  vibe-manager manager returned the vibe-manager board and then the
-  **dj-station** board, and a following `patch` failed with "ticket not
-  found". Manager agents should pass `--workspace-id` / `--working-dir`
-  explicitly rather than relying on the defaults. Both are *global* options,
-  so they must come BEFORE the subcommand
-  (`vibectl.py --workspace-id X snapshot`, not `vibectl.py snapshot
-  --workspace-id X`, which argparse rejects).
+- `vibectl.py`'s `--workspace-id` / `--working-dir` are *global* options, so
+  they must come BEFORE the subcommand (`vibectl.py --workspace-id X
+  snapshot`, not `vibectl.py snapshot --workspace-id X`, which argparse
+  rejects).
 
 Operational notes for the extension:
 
@@ -450,6 +465,11 @@ Operational notes for the extension:
   Installing from a local path copies the package directory verbatim, so a
   `node_modules/` inside `vibe-board/` lands in the agent-server install
   (38 MB vs 164 KB — this was hit and fixed). `cd extensions && npm test`.
+  `npm test` builds and runs the `*.test.js` bundle tests ONLY; the `*.mjs`
+  suites (store, live) hit the real agent server, so run them explicitly:
+  `cd extensions && node --test vibe-board/test/*.mjs`. They write to a temp
+  store root (`mkdtemp`), never the real `~/.openhands/vibe-manager` — keep it
+  that way, they create and delete workspaces.
 - `extensions/vibe-board/dist/extension.js` is **committed**: the agent-server
   installs by copying files and never runs a build.
 - `static/style.css` stays the single source of truth. `build.mjs` scopes every
