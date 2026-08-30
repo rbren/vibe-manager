@@ -111,6 +111,8 @@ function hostWithStore({
   /* Awaited before a download is served, so a test can hold a read open and
      make a response land after something else happened. */
   beforeRead = null,
+  /* The agent server's LLM profiles, which fill the request-settings picker. */
+  profiles = { profiles: [], active_profile: null },
 } = {}) {
   const calls = [];
   const disk = new Map(Object.entries(files));
@@ -119,6 +121,7 @@ function hostWithStore({
       async request({ path, method = "GET", body } = {}) {
         calls.push({ path, method, body });
         if (path === "/api/file/home") return { home };
+        if (path === "/api/profiles") return profiles;
         if (path === "/api/workspaces") return workspaces;
         if (path.startsWith("/api/file/search_subdirs")) return { items: subdirs };
         if (path.startsWith("/api/automation/v1")) {
@@ -502,7 +505,7 @@ describe("mount", () => {
     const boardPath = `${root}/workspaces/w1/board.json`;
     const workspace = { id: "w1", name: "demo", path: "/git/demo", max_concurrent: 2 };
 
-    async function mountWithComposer() {
+    async function mountWithComposer(opts = {}) {
       dom.store.clear();
       const ctx = hostWithStore({
         home,
@@ -510,6 +513,7 @@ describe("mount", () => {
           [`${root}/index.json`]: { workspaces: [workspace] },
           [boardPath]: { version: 1, workspace_id: "w1", tickets: [] },
         },
+        ...opts,
       });
       const container = makeContainer();
       const dispose = mountBoard({ container, path: "demo", navigate: () => {}, host: ctx.host });
@@ -543,6 +547,58 @@ describe("mount", () => {
       assert.equal(ticket.status, "pending");
       assert.equal(ticket.entries[0].body, "ship it", "body survives the round trip");
       assert.equal(ticket.entries[0].author, "user");
+      assert.equal(ticket.llm_profile, null, "defaults to the manager's choice of model");
+      assert.equal(ticket.max_budget, 10, "defaults to a $10 budget");
+      dispose();
+    });
+
+    it("offers the agent server's profiles, manager's choice first", async () => {
+      const { container, dispose } = await mountWithComposer({
+        profiles: {
+          profiles: [
+            { name: "fable", model: "anthropic/claude-fable-5" },
+            { name: "opus", model: "anthropic/claude-opus-5" },
+          ],
+          active_profile: "opus",
+        },
+      });
+      const options = () => [...container.querySelectorAll("#new-ticket-profile option")];
+      await waitFor(() => options().length === 3);
+      assert.deepEqual(
+        options().map((o) => [o.getAttribute("value"), o.textContent]),
+        [["", "Manager's choice"], ["fable", "fable"], ["opus", "opus (default)"]],
+      );
+      dispose();
+    });
+
+    it("records the requested agent and budget on the ticket", async () => {
+      const { container, disk, dispose } = await mountWithComposer({
+        profiles: {
+          profiles: [{ name: "opus", model: "anthropic/claude-opus-5" }],
+          active_profile: "opus",
+        },
+      });
+      const panel = container.querySelector("#new-ticket-settings-panel");
+      assert.equal(panel.hasAttribute("hidden"), true, "settings start collapsed");
+      container.querySelector("#new-ticket-settings").dispatchEvent(
+        new dom.window.Event("click", { bubbles: true }),
+      );
+      assert.equal(panel.hasAttribute("hidden"), false, "the ⚙ button reveals them");
+
+      await waitFor(
+        () => container.querySelectorAll("#new-ticket-profile option").length === 2,
+      );
+      container.querySelector("#new-ticket-profile").value = "opus";
+      container.querySelector("#new-ticket-budget").value = "25";
+      container.querySelector("#new-ticket-body").value = "spare no expense";
+      container.querySelector("#new-ticket-form").dispatchEvent(
+        new dom.window.Event("submit", { bubbles: true, cancelable: true }),
+      );
+
+      await waitFor(() => written(disk).length === 1);
+      const [ticket] = written(disk);
+      assert.equal(ticket.llm_profile, "opus");
+      assert.equal(ticket.max_budget, 25);
       dispose();
     });
 

@@ -60,6 +60,11 @@ ACCENTS = [
 ]
 DEFAULT_ACCENT = "ember"
 
+# Spend cap (USD) a ticket's worker conversation may accumulate. The agent
+# server has no budget option of its own, so the automation enforces it by
+# watching the conversation's accumulated cost (see automation/main.py).
+DEFAULT_TICKET_BUDGET = 10.0
+
 app = FastAPI(title="Vibe Work Manager")
 
 # The Canvas Extension build of the SPA (extensions/kanban-manager) runs on the
@@ -125,6 +130,8 @@ def init_db() -> None:
                 pr_url TEXT,
                 manager_note TEXT,
                 dispatched_entry_count INTEGER NOT NULL DEFAULT 0,
+                llm_profile TEXT,
+                max_budget REAL,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
             );
@@ -158,6 +165,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE tickets ADD COLUMN verified_at REAL")
         if "title" not in cols:
             conn.execute("ALTER TABLE tickets ADD COLUMN title TEXT")
+        if "llm_profile" not in cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN llm_profile TEXT")
+        if "max_budget" not in cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN max_budget REAL")
         if "finished_at" not in cols:
             conn.execute("ALTER TABLE tickets ADD COLUMN finished_at REAL")
             # Backfill: best guess for rows finished before this column existed.
@@ -448,6 +459,10 @@ class WorkspaceSettings(BaseModel):
 
 class NewTicket(BaseModel):
     body: str
+    # Request settings. None = "manager's choice": the manager keeps picking
+    # the model per task, exactly as it did before these existed.
+    llm_profile: str | None = None
+    max_budget: float | None = None
 
 
 class NewEntry(BaseModel):
@@ -487,6 +502,9 @@ class StartConversation(BaseModel):
     # the conversation starts on that model; on follow-up the conversation is
     # switched to it first. None = the server's active default profile.
     llm_profile: str | None = None
+    # Ticket this conversation works on. Its request settings win over what the
+    # manager picked: a user who chose a model gets that model.
+    ticket_id: str | None = None
 
 
 # ---------------------------------------------------------------- attachments
@@ -761,6 +779,10 @@ def create_ticket(ws_id: str, req: NewTicket):
     body = req.body.strip()
     if not body:
         raise HTTPException(400, "empty ticket body")
+    budget = DEFAULT_TICKET_BUDGET if req.max_budget is None else req.max_budget
+    if budget <= 0:
+        raise HTTPException(400, "max_budget must be positive")
+    profile = (req.llm_profile or "").strip() or None
     now = time.time()
     tid = uuid.uuid4().hex[:12]
     with db() as conn:
@@ -771,8 +793,9 @@ def create_ticket(ws_id: str, req: NewTicket):
             (ws_id,),
         ).fetchone()[0]
         conn.execute(
-            "INSERT INTO tickets(id, workspace_id, status, sort_order, created_at, updated_at) VALUES(?,?,?,?,?,?)",
-            (tid, ws_id, "pending", max_order + 1, now, now),
+            "INSERT INTO tickets(id, workspace_id, status, sort_order, llm_profile, "
+            "max_budget, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?)",
+            (tid, ws_id, "pending", max_order + 1, profile, budget, now, now),
         )
         conn.execute(
             "INSERT INTO entries(id, ticket_id, author, body, created_at) VALUES(?,?,?,?,?)",
@@ -1107,6 +1130,23 @@ def _worktree_guidance(working_dir: str, wt: dict) -> str:
     )
 
 
+def ticket_llm_profile(ticket_id: str | None) -> str | None:
+    """The model the user asked for on this ticket, if any.
+
+    None means "manager's choice" — the ticket carries no explicit selection,
+    so whatever the manager picked for the dispatch stands.
+    """
+    if not ticket_id:
+        return None
+    with db() as conn:
+        row = conn.execute(
+            "SELECT llm_profile FROM tickets WHERE id=?", (ticket_id,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "ticket not found")
+    return row["llm_profile"] or None
+
+
 @app.post("/api/manager/conversations")
 def manager_start_conversation(req: StartConversation):
     """Start a worker/manager conversation (or send a follow-up to an existing one).
@@ -1116,18 +1156,19 @@ def manager_start_conversation(req: StartConversation):
     """
     headers = {"X-Session-API-Key": SESSION_KEY, "Content-Type": "application/json"}
     prompt = req.prompt
+    llm_profile = ticket_llm_profile(req.ticket_id) or req.llm_profile
     with httpx.Client(timeout=120) as client:
         if req.conversation_id:
-            if req.llm_profile:
+            if llm_profile:
                 r = client.post(
                     f"{AGENT_SERVER}/api/conversations/{req.conversation_id}/switch_profile",
-                    headers=headers, json={"profile_name": req.llm_profile},
+                    headers=headers, json={"profile_name": llm_profile},
                 )
                 if r.status_code in (400, 404):
                     names = [p["name"] for p in _llm_profiles().get("profiles", [])]
                     raise HTTPException(
                         400,
-                        f"switch to llm_profile {req.llm_profile!r} failed: "
+                        f"switch to llm_profile {llm_profile!r} failed: "
                         f"{r.json().get('detail')}; available: {names}",
                     )
                 r.raise_for_status()
@@ -1150,7 +1191,7 @@ def manager_start_conversation(req: StartConversation):
         conv_id = str(uuid.uuid4())
         # Resolve settings (and validate llm_profile — 400s on an unknown
         # name) BEFORE provisioning the worktree so we never leak one.
-        agent_settings = _agent_settings_payload(req.llm_profile)
+        agent_settings = _agent_settings_payload(llm_profile)
         if req.worktree:
             wt = _provision_worker_worktree(req.working_dir, conv_id)
             prompt += _worktree_guidance(req.working_dir, wt)

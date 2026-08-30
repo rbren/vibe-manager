@@ -123,6 +123,33 @@ via /etc/nginx/.htpasswd).
     instead of curling the vibe API. Keep the two skills in step otherwise.
   - Tests: `tests/test_manager_chat.py` and the "talk to the manager" cases in
     `extensions/kanban-manager/test/extension.test.js`.
+- **Request settings** (⚙ on the new-request form): the agent that runs the
+  ticket and the budget it may spend. Stored on the ticket as `llm_profile`
+  and `max_budget` (SQLite columns + the same fields in the JSON store).
+  - Defaults are **"manager's choice"** (`llm_profile` null — the manager keeps
+    picking a model per task, see Model selection) and **$10**
+    (`DEFAULT_TICKET_BUDGET` in app.py, `DEFAULT_BUDGET` in static/app.js and
+    `src/store.js` — keep the three in step, and the `value` on the input).
+    The picker is filled from the agent server's profiles
+    (`GET /api/manager/llm-profiles` in the SPA, `/api/profiles` via the host
+    in the extension), fetched once per session with the active profile
+    labelled "(default)".
+  - An explicit profile wins at dispatch: `vibectl dispatch/followup --ticket
+    <id>` resolves it (`vibestore.ticket_llm_profile`) and overrides the
+    manager's `--profile`; `POST /api/manager/conversations` does the same
+    with `ticket_id` (`app.ticket_llm_profile`). The manager prompt carries
+    each ticket's `requested_model`/`budget_usd` and is told the user's choice
+    wins.
+  - The agent server has **no max-spend option**, so the budget is enforced by
+    the poller: `conversation_spend()` sums `stats.usage_to_metrics[*]
+    .accumulated_cost`, and `apply_budget_stops()` pauses a worker at or over
+    its ticket's budget, moves the card to needs_input and leaves a
+    manager_note. Each conversation is stopped **once** (`budget_stopped` in
+    the KV state) so a deliberate resume is not immediately undone.
+  - Tests: `tests/test_request_settings.py` (run with
+    `.venv/bin/python`), the "submitting a new request" cases in
+    `extensions/kanban-manager/test/extension.test.js`, `createTicket` in
+    `test/store.test.mjs`, and `llmProfiles` in `test/live.test.mjs`.
 - **Ticket attachments**: users can attach files/images to tickets (paperclip
   button on the new-ticket form and in the drawer's append form; drawer shows
   image thumbnails + file chips, cards show a count chip). `attachments`
@@ -447,7 +474,9 @@ via /etc/nginx/.htpasswd).
   profile list at prompt-build time and degrades to a self-serve
   GET instruction if the vibe API is unreachable. Guidance is
   capability-based (strongest ↔ gnarly work, default ↔ routine, cheapest ↔
-  chores) because profile names change. Tests: `tests/test_llm_profiles.py`.
+  chores) because profile names change. A model the user picked on the request
+  (see Request settings) overrides all of this. Tests:
+  `tests/test_llm_profiles.py`.
 - Auth keys are read at service start from `.session-key` / `.automation-key`
   in the repo root (falling back to env). These are extracted from the live
   agent-server process env; static copies go stale.

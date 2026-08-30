@@ -194,6 +194,9 @@ test("board mutations: create, append, reopen, verify, reorder", async () => {
   assert.equal(t1.sort_order, 1);
   assert.equal(t1.dispatched_entry_count, 0);
 
+  assert.equal(t1.llm_profile, null, "no model chosen means the manager picks");
+  assert.equal(t1.max_budget, 10, "requests default to a $10 budget");
+
   const t2 = await store.createTicket(wsId, "second");
   assert.equal(t2.sort_order, 2, "new tickets land at the bottom of pending");
 
@@ -242,6 +245,26 @@ test("board mutations: create, append, reopen, verify, reorder", async () => {
     assert.equal(after.tickets.find((t) => t.id === id).sort_order, idx);
   });
   await assert.rejects(() => store.reorder(wsId, "bogus", []), /bad status/);
+});
+
+test("createTicket records the request's agent and budget", async () => {
+  const { store, wsId } = scratchStore();
+
+  const t = await store.createTicket(wsId, "spare no expense", {
+    llm_profile: "opus",
+    max_budget: 42,
+  });
+  assert.equal(t.llm_profile, "opus", "the requested model is recorded");
+  assert.equal(t.max_budget, 42);
+
+  const onDisk = (await store.readBoard(wsId)).tickets[0];
+  assert.equal(onDisk.llm_profile, "opus", "and survives the round trip to disk");
+  assert.equal(onDisk.max_budget, 42);
+
+  await assert.rejects(
+    () => store.createTicket(wsId, "free lunch", { max_budget: 0 }),
+    /max_budget/,
+  );
 });
 
 test("verifyTicket stamps verified_at and is rejected for unknown ids", async () => {

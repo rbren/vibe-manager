@@ -52,6 +52,10 @@ const ACCENTS = [
 ];
 const DEFAULT_ACCENT = "ember";
 
+// Spend cap (USD) a new request gets unless the user changes it. Mirrors
+// DEFAULT_TICKET_BUDGET in app.py and the value in index.html's budget input.
+const DEFAULT_BUDGET = 10;
+
 // An empty lane is an invitation to act, not a blank box.
 const LANE_EMPTY = {
   pending: "Nothing queued. Send a request above.",
@@ -581,6 +585,50 @@ async function reorderWithin(status, draggedId, targetId, above) {
 
 /* --------------------------------------------------------------- tickets */
 
+/* The ⚙ panel on the new-request form: which agent runs the ticket and how
+   much it may spend. Defaults are "manager's choice" (empty profile — the
+   manager keeps picking per task) and DEFAULT_BUDGET. */
+
+function toggleTicketSettings() {
+  const panel = $("#new-ticket-settings-panel");
+  panel.hidden = !panel.hidden;
+  $("#new-ticket-settings").setAttribute("aria-expanded", String(!panel.hidden));
+  $("#new-ticket-settings").classList.toggle("active", !panel.hidden);
+}
+
+async function loadLLMProfiles() {
+  const sel = $("#new-ticket-profile");
+  let data;
+  try {
+    data = await api("/api/manager/llm-profiles");
+  } catch (e) {
+    console.error(`model list unavailable: ${e.message}`);
+    return;
+  }
+  const chosen = sel.value;
+  sel.innerHTML = "";
+  const managers = document.createElement("option");
+  managers.value = "";
+  managers.textContent = "Manager's choice";
+  sel.appendChild(managers);
+  for (const p of data.profiles || []) {
+    const o = document.createElement("option");
+    o.value = p.name;
+    o.textContent = p.name === data.active_profile ? `${p.name} (default)` : p.name;
+    o.title = p.model || "";
+    sel.appendChild(o);
+  }
+  sel.value = chosen;
+}
+
+function ticketSettings() {
+  const budget = parseFloat($("#new-ticket-budget").value);
+  return {
+    llm_profile: $("#new-ticket-profile").value || null,
+    max_budget: Number.isFinite(budget) && budget > 0 ? budget : DEFAULT_BUDGET,
+  };
+}
+
 async function submitTicket() {
   const ta = $("#new-ticket-body");
   const body = ta.value.trim();
@@ -590,7 +638,7 @@ async function submitTicket() {
   try {
     const ticket = await api(`/api/workspaces/${state.ws.id}/tickets`, {
       method: "POST",
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body, ...ticketSettings() }),
     });
     ta.value = "";
     const files = state.newTicketFiles.splice(0);
@@ -1013,6 +1061,7 @@ function wire() {
   $("#new-ticket-body").addEventListener("keydown", ticketKeydown(submitTicket));
 
   $("#new-ticket-attach").addEventListener("click", () => $("#new-ticket-file-input").click());
+  $("#new-ticket-settings").addEventListener("click", toggleTicketSettings);
   $("#new-ticket-file-input").addEventListener("change", (e) => {
     state.newTicketFiles.push(...e.target.files);
     e.target.value = "";
@@ -1091,6 +1140,9 @@ function toggleTheme() {
 
 async function init() {
   wire();
+  // The agent server's profiles are workspace-independent; one fetch fills the
+  // request-settings picker for the session.
+  loadLLMProfiles();
   window.addEventListener("popstate", async () => {
     const name = workspaceNameFromURL();
     const path = name ? workspacePathFromName(name) : null;

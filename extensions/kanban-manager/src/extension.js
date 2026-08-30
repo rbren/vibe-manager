@@ -17,7 +17,7 @@
 */
 
 import { BOARD_MARKUP } from "./markup.js";
-import { Store, DEFAULT_ACCENT } from "./store.js";
+import { Store, DEFAULT_ACCENT, DEFAULT_BUDGET } from "./store.js";
 import { Live } from "./live.js";
 import { Manager } from "./manager.js";
 import { ManagerChat } from "./managerchat.js";
@@ -875,6 +875,51 @@ export function mountBoard({ container, path, navigate, host }) {
 
   /* ------------------------------------------------------------- tickets */
 
+  /* The ⚙ panel on the new-request form: which agent runs the ticket and how
+     much it may spend. Defaults are "manager's choice" (empty profile — the
+     manager keeps picking per task) and DEFAULT_BUDGET. */
+
+  function toggleTicketSettings() {
+    const panel = $("#new-ticket-settings-panel");
+    panel.hidden = !panel.hidden;
+    $("#new-ticket-settings").setAttribute("aria-expanded", String(!panel.hidden));
+    $("#new-ticket-settings").classList.toggle("active", !panel.hidden);
+  }
+
+  async function loadLLMProfiles() {
+    const sel = $("#new-ticket-profile");
+    let data;
+    try {
+      data = await state.live.llmProfiles();
+    } catch (e) {
+      console.error(`model list unavailable: ${e.message}`);
+      return;
+    }
+    if (!alive()) return;
+    const chosen = sel.value;
+    sel.innerHTML = "";
+    const managers = document.createElement("option");
+    managers.value = "";
+    managers.textContent = "Manager's choice";
+    sel.appendChild(managers);
+    for (const p of data.profiles) {
+      const o = document.createElement("option");
+      o.value = p.name;
+      o.textContent = p.name === data.active_profile ? `${p.name} (default)` : p.name;
+      o.title = p.model || "";
+      sel.appendChild(o);
+    }
+    sel.value = chosen;
+  }
+
+  function ticketSettings() {
+    const budget = parseFloat($("#new-ticket-budget").value);
+    return {
+      llm_profile: $("#new-ticket-profile").value || null,
+      max_budget: Number.isFinite(budget) && budget > 0 ? budget : DEFAULT_BUDGET,
+    };
+  }
+
   async function submitTicket() {
     const ta = $("#new-ticket-body");
     const body = ta.value.trim();
@@ -882,7 +927,7 @@ export function mountBoard({ container, path, navigate, host }) {
     const btn = $("#new-ticket-submit");
     btn.disabled = true;
     try {
-      const ticket = await state.store.createTicket(state.ws.id, body);
+      const ticket = await state.store.createTicket(state.ws.id, body, ticketSettings());
       if (!alive()) return;
       ta.value = "";
       const files = state.newTicketFiles.splice(0);
@@ -1325,6 +1370,7 @@ export function mountBoard({ container, path, navigate, host }) {
     on($("#new-ticket-body"), "keydown", ticketKeydown(submitTicket));
 
     on($("#new-ticket-attach"), "click", () => $("#new-ticket-file-input").click());
+    on($("#new-ticket-settings"), "click", toggleTicketSettings);
     on($("#new-ticket-file-input"), "change", (e) => {
       state.newTicketFiles.push(...e.target.files);
       e.target.value = "";
@@ -1433,6 +1479,10 @@ export function mountBoard({ container, path, navigate, host }) {
      backend is already connected to. connect() renders the setup screen
      itself if the file API can't be reached, with the reason. */
   connect();
+  /* After connect() so the store root is still the first request: the profiles
+     are workspace-independent, so one fetch fills the request-settings picker
+     for the life of the mount. */
+  loadLLMProfiles();
 
   return () => {
     disposed = true;

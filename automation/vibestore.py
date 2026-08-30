@@ -208,6 +208,24 @@ def snapshot(ws_id: str) -> dict:
     return {"workspace": get_workspace(ws_id), "tickets": read_board(ws_id)["tickets"]}
 
 
+def get_ticket(ws_id: str, ticket_id: str) -> dict:
+    ticket = next((t for t in read_board(ws_id)["tickets"] if t["id"] == ticket_id), None)
+    if ticket is None:
+        raise KeyError(f"ticket {ticket_id} not found")
+    return ticket
+
+
+def ticket_llm_profile(ws_id: str | None, ticket_id: str | None) -> str | None:
+    """The model the user asked for on a ticket, if any.
+
+    None means "manager's choice": the ticket carries no explicit selection,
+    so the model the manager picked for this dispatch stands.
+    """
+    if not (ws_id and ticket_id):
+        return None
+    return get_ticket(ws_id, ticket_id).get("llm_profile") or None
+
+
 # --------------------------------------------------------------- ticket patch
 
 def patch_ticket(
@@ -491,8 +509,14 @@ def start_conversation(
     worktree: bool = True,
     max_iterations: int = 500,
     ws_id: str | None = None,
+    ticket_id: str | None = None,
 ) -> dict:
-    """Start a worker/manager conversation, or follow up on an existing one."""
+    """Start a worker/manager conversation, or follow up on an existing one.
+
+    A ticket's own model selection wins over `llm_profile`: what the user
+    picked on the request is what the worker runs on.
+    """
+    llm_profile = ticket_llm_profile(ws_id, ticket_id) or llm_profile
     if conversation_id:
         if llm_profile:
             agent_request(

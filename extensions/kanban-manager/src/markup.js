@@ -82,9 +82,24 @@ export const BOARD_MARKUP = `
           <button type="button" id="new-ticket-attach" class="attach-btn" title="Attach files or images" aria-label="Attach files or images">
             <span aria-hidden="true">📎</span>
           </button>
+          <button type="button" id="new-ticket-settings" class="attach-btn settings-btn"
+                  aria-expanded="false" title="Request settings: agent and budget"
+                  aria-label="Request settings"><span aria-hidden="true">⚙</span></button>
           <button type="button" id="manager-chat-open" class="ghost-btn talk-btn"
                   title="Chat with the manager about this board">Talk to the manager</button>
           <button type="submit" id="new-ticket-submit">Send request</button>
+        </div>
+      </div>
+      <div id="new-ticket-settings-panel" class="desk-settings" hidden>
+        <div class="desk-setting">
+          <label class="control-label" for="new-ticket-profile">Agent</label>
+          <select id="new-ticket-profile">
+            <option value="">Manager's choice</option>
+          </select>
+        </div>
+        <div class="desk-setting">
+          <label class="control-label" for="new-ticket-budget">Budget ($)</label>
+          <input id="new-ticket-budget" type="number" min="1" step="1" value="10">
         </div>
       </div>
       <div id="new-ticket-files" class="file-chips" hidden></div>

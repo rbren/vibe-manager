@@ -248,6 +248,21 @@ test("automationStatus against the real automation backend", { skip: !ws || !KEY
   assert.equal(typeof out.consecutive_failures, "number");
 });
 
+test("llmProfiles reads the real agent server's profile list", { skip: !KEY }, async () => {
+  const live = new Live(makeHost("http://127.0.0.1:18000"));
+  const out = await live.llmProfiles();
+  assert.ok(Array.isArray(out.profiles) && out.profiles.length, "profiles are listed");
+  for (const p of out.profiles) {
+    assert.equal(typeof p.name, "string", "the picker needs a name to send");
+    assert.equal(typeof p.model, "string", "and a model to show");
+  }
+  assert.ok(
+    out.profiles.some((p) => p.name === out.active_profile),
+    "the active profile is one of them — that is the (default) option",
+  );
+  assert.ok(!JSON.stringify(out).includes("api_key\":\"g"), "no encrypted keys leak");
+});
+
 test("fetchActionSummary pages past non-action events", { skip: !KEY }, async () => {
   const convId = firstConversationId();
   if (!convId) return;

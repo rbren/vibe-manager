@@ -339,6 +339,16 @@ select:hover, input[type=number]:hover { border-color: var(--text-faint); }
 }
 .attach-btn:hover { background: var(--ghost-bg-hover); border-color: var(--text-faint); }
 .talk-btn { white-space: nowrap; }
+.settings-btn.active {
+  color: var(--text); background: var(--ghost-bg-hover); border-color: var(--text-faint);
+}
+
+.desk-settings {
+  display: flex; flex-wrap: wrap; gap: var(--s4);
+  padding-top: var(--s3); border-top: 1px solid var(--line-soft);
+}
+.desk-setting { display: flex; align-items: center; gap: var(--s2); }
+.desk-setting select { min-width: 12rem; }
 
 #new-ticket-submit, #append-form button[type=submit] {
   background: var(--btn-bg); color: var(--btn-text); border: 0;

@@ -246,6 +246,15 @@ export class Live {
     return this.statuses.peek(convId) ?? null;
   }
 
+  /** The agent server's LLM profiles, for the request-settings picker. */
+  async llmProfiles() {
+    const res = await this.host.agentServer.request({ path: "/api/profiles" });
+    return {
+      profiles: res?.profiles || [],
+      active_profile: res?.active_profile || null,
+    };
+  }
+
   primeModel(convId, model) {
     if (convId && model) this.models.set(convId, model);
   }

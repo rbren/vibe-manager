@@ -29,6 +29,10 @@ export const VERIFIED = "verified";
    for records written before the field existed. */
 export const DEFAULT_ACCENT = "ember";
 
+/* Spend cap (USD) a new request gets unless the user changes it. The
+   automation enforces it by watching the worker conversation's cost. */
+export const DEFAULT_BUDGET = 10;
+
 export function newId() {
   const bytes = new Uint8Array(6);
   crypto.getRandomValues(bytes);
@@ -364,9 +368,13 @@ export class Store {
 
   // ----------------------------------------------------------------- tickets
 
-  async createTicket(wsId, body) {
+  /** `settings` carries the new-request choices: {llm_profile, max_budget}.
+      A null profile is "manager's choice" — the manager keeps picking. */
+  async createTicket(wsId, body, settings = {}) {
     const text = (body || "").trim();
     if (!text) throw new Error("empty ticket body");
+    const budget = Number(settings.max_budget ?? DEFAULT_BUDGET);
+    if (!(budget > 0)) throw new Error("max_budget must be positive");
     const now = nowTs();
     return this.mutateBoard(wsId, (board) => {
       const maxOrder = board.tickets
@@ -381,6 +389,8 @@ export class Store {
         pr_url: null,
         manager_note: null,
         dispatched_entry_count: 0,
+        llm_profile: settings.llm_profile || null,
+        max_budget: budget,
         created_at: now,
         updated_at: now,
         finished_at: null,
