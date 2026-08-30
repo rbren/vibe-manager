@@ -284,6 +284,8 @@ var BOARD_MARKUP = `
           <button type="button" id="new-ticket-attach" class="attach-btn" title="Attach files or images" aria-label="Attach files or images">
             <span aria-hidden="true">\u{1F4CE}</span>
           </button>
+          <button type="button" id="manager-chat-open" class="ghost-btn talk-btn"
+                  title="Chat with the manager about this board">Talk to the manager</button>
           <button type="submit" id="new-ticket-submit">Send request</button>
         </div>
       </div>
@@ -357,6 +359,28 @@ var BOARD_MARKUP = `
           <span aria-hidden="true">\u{1F4CE}</span>
         </button>
         <button type="submit">Add</button>
+      </div>
+    </form>
+  </div>
+</aside>
+
+<aside id="manager-chat" hidden>
+  <div class="chat-backdrop" id="manager-chat-backdrop"></div>
+  <div class="chat-panel" role="dialog" aria-modal="true" aria-label="Talk to the manager">
+    <div class="chat-head">
+      <div class="chat-headings">
+        <span class="eyebrow">Talk to the manager</span>
+        <div class="chat-activity" id="manager-chat-activity"></div>
+      </div>
+      <a class="chip convo" id="manager-chat-link" hidden>\u2197 open conversation</a>
+      <button class="drawer-close" id="manager-chat-close" aria-label="Close">\u2715</button>
+    </div>
+    <div class="chat-log" id="manager-chat-log" aria-live="polite"></div>
+    <form id="manager-chat-form">
+      <textarea id="manager-chat-body" rows="2" aria-label="Message the manager"
+        placeholder="Ask for something, or ask how the board is doing\u2026"></textarea>
+      <div class="desk-actions">
+        <button type="submit" id="manager-chat-send">Send</button>
       </div>
     </form>
   </div>
@@ -1110,6 +1134,141 @@ var Manager = class {
   }
 };
 
+// kanban-manager/src/managerchat.js
+var CHAT_MARKER = "<!-- vibe-manager-skill -->";
+var CHAT_ROLE = "manager_chat";
+var MAX_PAGES = 20;
+function managerChatSkill(ws, storeRoot) {
+  const push = ws.push_mode === "pr" ? "pull requests (workers branch and open a PR)" : "push to the default branch directly";
+  const vibectl = `${storeRoot}/bin/${ws.id}/vibectl.py`;
+  return `${CHAT_MARKER}
+You are the **Vibe Manager** for the project at \`${ws.path}\` (workspace id \`${ws.id}\`), talking to the user in a chat window on their kanban board. Replies land in a small chat panel: keep them short, plain and conversational.
+
+## What you do here
+- Listen to the user: new requests, questions about the board, complaints about how the work is going.
+- Write every request down in \`AGENTS.md\` (see below) so it survives this conversation.
+- Answer questions about the board and the agents working on it from the LIVE state, never from memory.
+- You do NOT write feature code, and you do NOT dispatch workers from this chat. The manager automation polls this board every minute and does the dispatching, with rules about concurrency and conflicting tickets that you cannot see from here. Tell the user what you recorded and let it pick the work up.
+
+## Recording requests in AGENTS.md
+1. \`AGENTS.md\` at \`${ws.path}\` is the project's standing memory \u2014 read it first.
+2. Keep ONE top-level \`## Manager\` section in it (append the section at the end of the file if it isn't there yet, and create the file if it doesn't exist).
+3. Under it, one bullet per request the user makes: today's date (take it from \`date -I\`, don't guess), the request in the user's own words (one or two lines), and what you did about it. Update the existing bullet when the user refines a request instead of adding a second one.
+4. Write the bullet as soon as the request is made, before you write a long answer.
+5. Leave the checkout clean: \`git add AGENTS.md && git commit -m "Manager: <short>"\` after editing, and push it (this workspace lands work via ${push}). Never touch other files, and never commit someone else's work in progress.
+
+## Reading the board
+The board is JSON on disk. Read it with the workspace's manager CLI:
+- \`python3 ${vibectl} snapshot\` \u2014 every ticket with \`status\` (pending/in_progress/needs_input/finished/verified), \`entries\` (the request text, oldest first), \`sort_order\` (the user's priority inside a column, lower first), \`title\`, \`manager_note\`, \`conversation_id\`, \`pr_url\` and \`attachments\`.
+- \`python3 ${vibectl} conversation <conversation_id>\` \u2014 \`execution_status\` (running|idle|finished|error|stuck|paused) and the model a ticket's worker is on.
+If that CLI is missing (the automation installs it on its first run), read \`${storeRoot}/workspaces/${ws.id}/board.json\` directly \u2014 but never write to it by hand.
+
+## Reading the conversations on the board
+Every dispatched ticket has a worker conversation on the agent server (\`$AGENT_SERVER_URL\`, session key in \`$SESSION_API_KEY\` where the environment provides them; the CLI above already knows how to reach it). Beyond \`conversation\`:
+- \`GET <agent_server>/api/conversations/<conversation_id>/events/search?sort_order=TIMESTAMP_DESC&limit=20\` \u2192 the recent events: \`MessageEvent\`s carry the agent's own words in \`llm_message.content[].text\`, \`ActionEvent\`s the commands it ran.
+
+## Right now
+Read \`AGENTS.md\` and the board, then greet the user in ONE sentence that says where the board stands (e.g. "3 queued, 1 agent working"). Then wait \u2014 answer what they ask, record what they request.`;
+}
+function chatMessage(event) {
+  if (event?.kind !== "MessageEvent") return null;
+  const msg = event.llm_message || {};
+  const role = msg.role || (event.source === "user" ? "user" : "assistant");
+  if (role !== "user" && role !== "assistant") return null;
+  const text = (msg.content || []).filter((c) => c && c.type === "text" && c.text).map((c) => c.text).join("\n").trim();
+  if (!text || text.startsWith(CHAT_MARKER)) return null;
+  return { id: event.id, role, text, timestamp: event.timestamp || null };
+}
+var ManagerChat = class {
+  constructor(host, store, live) {
+    this.host = host;
+    this.store = store;
+    this.live = live;
+  }
+  /* The settings have to come back with their secrets so the conversation can
+     be created server-side, and that needs a header the host client does not
+     forward — hence a raw fetch, the same escape hatch manager.js uses. */
+  async agentSettings() {
+    const creds = resolveBackendCredentials(this.host?.backend?.id);
+    if (!creds) throw new Error("no backend credentials available to start a chat");
+    const res = await fetch(`${creds.host}/api/settings`, {
+      headers: {
+        "X-Expose-Secrets": "encrypted",
+        ...creds.apiKey ? { "X-Session-API-Key": creds.apiKey } : {}
+      }
+    });
+    if (!res.ok) throw new Error(`settings unavailable: ${res.status} ${res.statusText}`);
+    const settings = (await res.json())?.agent_settings;
+    if (!settings) throw new Error("agent server returned no agent settings");
+    settings.tools = null;
+    return settings;
+  }
+  /** Start a chat conversation for this workspace; returns its id. */
+  async start(ws) {
+    const skill = managerChatSkill(ws, await this.store.storeRoot());
+    const created = await this.host.agentServer.request({
+      method: "POST",
+      path: "/api/conversations",
+      body: {
+        // The dedicated workspace option keeps the conversation attached to
+        // the PROJECT directory, which is where AGENTS.md lives.
+        workspace: { kind: "LocalWorkspace", working_dir: ws.path },
+        worktree: false,
+        agent_settings: await this.agentSettings(),
+        secrets_encrypted: true,
+        initial_message: { role: "user", content: [{ text: skill }], run: true },
+        max_iterations: 200,
+        autotitle: false,
+        tags: { workspace: ws.path, viberole: CHAT_ROLE }
+      }
+    });
+    const id = created?.id;
+    if (!id) throw new Error("agent server returned no conversation id");
+    await this.host.agentServer.request({
+      method: "PATCH",
+      path: `/api/conversations/${id}`,
+      body: { title: `\u{1F4AC} Manager chat \u2014 ${ws.name}` }
+    });
+    return id;
+  }
+  async send(convId, text) {
+    await this.host.agentServer.request({
+      method: "POST",
+      path: `/api/conversations/${convId}/events`,
+      body: { role: "user", content: [{ text }], run: true }
+    });
+  }
+  /* Turns since `after`, which is the cursor from the previous poll: the
+     newest EVENT seen, not the newest message, so a manager busy running tools
+     doesn't get its whole event log re-read every couple of seconds. */
+  async messages(convId, after = null) {
+    const messages = [];
+    let cursor = after;
+    let latestAction = null;
+    let pageId = null;
+    for (let page = 0; page < MAX_PAGES; page += 1) {
+      const query = new URLSearchParams({ sort_order: "TIMESTAMP", limit: "100" });
+      if (after) query.set("timestamp__gte", after);
+      if (pageId) query.set("page_id", pageId);
+      const res = await this.host.agentServer.request({
+        path: `/api/conversations/${convId}/events/search?${query}`
+      });
+      for (const event of res?.items || []) {
+        const ts = event?.timestamp;
+        if (ts && (cursor === null || ts > cursor)) cursor = ts;
+        if (after && ts && ts <= after) continue;
+        const msg = chatMessage(event);
+        if (msg) messages.push(msg);
+        const action = this.live?.extractActionSummary(event);
+        if (action) latestAction = action;
+      }
+      pageId = res?.next_page_id;
+      if (!pageId) break;
+    }
+    return { messages, cursor, latestAction };
+  }
+};
+
 // kanban-manager/src/extension.js
 var HOST_API_VERSION = "1";
 var PAGE_ROOT = "/extensions/kanban-manager/board";
@@ -1455,6 +1614,7 @@ var EXTENSION_CSS = true ? `.vibe-ext { --vibe-rem: 1.2rem; }
   font-size: calc(0.9375 * var(--vibe-rem)); padding: 0 13px; cursor: pointer; line-height: 1;
 }
 .vibe-ext .attach-btn:hover { background: var(--ghost-bg-hover); border-color: var(--text-faint); }
+.vibe-ext .talk-btn { white-space: nowrap; }
 
 .vibe-ext #new-ticket-submit, .vibe-ext #append-form button[type=submit] {
   background: var(--btn-bg); color: var(--btn-text); border: 0;
@@ -1747,6 +1907,59 @@ var EXTENSION_CSS = true ? `.vibe-ext { --vibe-rem: 1.2rem; }
 .vibe-ext #append-form { display: flex; gap: var(--s2); align-items: flex-end; }
 .vibe-ext #append-body { font-size: calc(0.875 * var(--vibe-rem)); }
 
+/* ------------------------------------------------------------ manager chat */
+
+.vibe-ext #manager-chat { position: fixed; inset: 0; z-index: 60; }
+.vibe-ext .chat-backdrop { position: absolute; inset: 0; background: var(--backdrop); backdrop-filter: blur(3px); }
+.vibe-ext .chat-panel {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(calc(46 * var(--vibe-rem)), calc(100vw - var(--s5) * 2)); max-height: min(calc(42 * var(--vibe-rem)), 88vh);
+  display: flex; flex-direction: column; gap: var(--s4);
+  padding: var(--s5); background: var(--slab);
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-panel);
+}
+.vibe-ext .chat-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s3); }
+.vibe-ext .chat-headings { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+.vibe-ext .chat-activity {
+  display: flex; align-items: center; gap: var(--s2);
+  font-family: var(--mono); font-size: calc(0.6875 * var(--vibe-rem)); color: var(--lane-progress);
+  min-height: calc(1.1 * var(--vibe-rem));
+}
+.vibe-ext .chat-activity.done { color: var(--text-dim); }
+.vibe-ext .chat-log {
+  flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: var(--s3);
+  padding-right: var(--s2); min-height: calc(8 * var(--vibe-rem));
+}
+.vibe-ext .chat-msg {
+  border-left: 2px solid var(--line); padding-left: var(--s3);
+  display: flex; flex-direction: column; gap: var(--s1);
+}
+.vibe-ext .chat-msg.assistant { border-left-color: var(--lane-progress); }
+.vibe-ext .chat-msg-head {
+  font-family: var(--mono); font-size: calc(0.625 * var(--vibe-rem)); text-transform: uppercase;
+  letter-spacing: .08em; color: var(--text-faint);
+}
+.vibe-ext .chat-msg.assistant .chat-msg-head { color: var(--lane-progress); }
+.vibe-ext .chat-msg-body { white-space: pre-wrap; word-break: break-word; font-size: calc(0.875 * var(--vibe-rem)); line-height: 1.55; }
+
+.vibe-ext #manager-chat-form { display: flex; gap: var(--s2); align-items: flex-end; }
+.vibe-ext #manager-chat-body {
+  flex: 1; resize: vertical; padding: var(--s3); font: inherit; font-size: calc(0.875 * var(--vibe-rem));
+  color: var(--text); background: var(--field);
+  border: 1px solid var(--line); border-radius: var(--r-md);
+}
+.vibe-ext #manager-chat-body::placeholder { color: var(--text-faint); }
+.vibe-ext #manager-chat-body:focus { outline: none; border-color: var(--flare); box-shadow: 0 0 0 3px var(--flare-ring); }
+.vibe-ext #manager-chat-send {
+  padding: 0 var(--s4); font-family: var(--display); font-size: calc(0.75 * var(--vibe-rem));
+  font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--btn-text); background: var(--btn-bg);
+  border: 0; border-radius: var(--r-md); cursor: pointer;
+}
+.vibe-ext #manager-chat-send:hover { background: var(--btn-bg-hover); }
+.vibe-ext #manager-chat-send:disabled { opacity: .5; cursor: wait; }
+
 /* -------------------------------------------------------------- responsive */
 @media (max-width: 1100px) {
   .vibe-ext .board, .vibe-ext .board.show-verified { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1863,7 +2076,9 @@ var LANE_EMPTY = {
 };
 var BOARD_POLL_MS = 5e3;
 var AUTOMATION_POLL_MS = 15e3;
+var CHAT_POLL_MS = 2e3;
 var TRIGGER_HINT = "Click to run the manager now";
+var CHAT_AUTHOR = { user: "you", assistant: "manager" };
 var styleRefCount = 0;
 function acquireStyle() {
   styleRefCount += 1;
@@ -1958,10 +2173,12 @@ function mountBoard({ container, path, navigate, host }) {
     return id;
   }
   const store = new Store(host);
+  const live = new Live(host);
   const state = {
     store,
-    live: new Live(host),
+    live,
     manager: new Manager(host, store),
+    chatClient: new ManagerChat(host, store, live),
     workspaces: { available: [], selected: [] },
     ws: null,
     tickets: [],
@@ -1973,7 +2190,12 @@ function mountBoard({ container, path, navigate, host }) {
     newTicketFiles: [],
     theme: readTheme(),
     pollTimer: null,
-    automationTimer: null
+    automationTimer: null,
+    // manager chat: {wsId, conversationId, url, messages, cursor, status, action}
+    chat: null,
+    chatTimer: null,
+    chatOpen: false,
+    chatReturnFocus: null
   };
   function readFlag(key) {
     try {
@@ -2145,6 +2367,8 @@ function mountBoard({ container, path, navigate, host }) {
     if (window.location.pathname !== target) navigate(target);
   }
   async function selectWorkspace(path2, { historyMode = "push" } = {}) {
+    closeManagerChat();
+    state.chat = null;
     if (!path2) {
       state.ws = null;
       try {
@@ -2718,6 +2942,137 @@ ${TRIGGER_HINT}`;
       if (alive()) console.error(`append failed: ${e.message}`);
     }
   }
+  async function openManagerChat() {
+    if (!state.ws) return;
+    state.chatReturnFocus = document.activeElement;
+    state.chatOpen = true;
+    $("#manager-chat").hidden = false;
+    if (state.chat && state.chat.wsId !== state.ws.id) state.chat = null;
+    renderManagerChat();
+    $("#manager-chat-body").focus();
+    if (!state.chat) await startManagerChat();
+    if (alive()) startChatPolling();
+  }
+  function closeManagerChat() {
+    if (!state.chatOpen) return;
+    state.chatOpen = false;
+    $("#manager-chat").hidden = true;
+    stopChatPolling();
+    const back = state.chatReturnFocus;
+    state.chatReturnFocus = null;
+    if (back?.isConnected) back.focus();
+  }
+  async function startManagerChat() {
+    const ws = state.ws;
+    const chat = {
+      wsId: ws.id,
+      conversationId: null,
+      url: null,
+      messages: [],
+      cursor: null,
+      status: null,
+      action: null,
+      error: null
+    };
+    state.chat = chat;
+    renderManagerChat();
+    try {
+      const id = await state.chatClient.start(ws);
+      if (!alive() || state.chat !== chat) return;
+      chat.conversationId = id;
+      chat.url = `/conversations/${id}`;
+    } catch (e) {
+      if (!alive()) return;
+      console.error(`manager chat failed to start: ${e.message}`);
+      chat.error = e.message;
+    }
+    renderManagerChat();
+  }
+  function startChatPolling() {
+    stopChatPolling();
+    state.chatTimer = setInterval(pollManagerChat, CHAT_POLL_MS);
+    pollManagerChat();
+  }
+  function stopChatPolling() {
+    clearInterval(state.chatTimer);
+    state.chatTimer = null;
+  }
+  cleanups.push(stopChatPolling);
+  async function pollManagerChat() {
+    const chat = state.chat;
+    if (!chat?.conversationId) return;
+    try {
+      const d = await state.chatClient.messages(chat.conversationId, chat.cursor);
+      if (!alive() || state.chat !== chat) return;
+      chat.cursor = d.cursor ?? chat.cursor;
+      chat.status = state.live.conversationStatus(chat.conversationId);
+      if (d.latestAction) chat.action = d.latestAction;
+      if (d.messages.length) chat.messages.push(...d.messages);
+    } catch (e) {
+      if (!alive()) return;
+      console.error(`manager chat poll failed: ${e.message}`);
+    }
+    renderManagerChat();
+  }
+  async function sendChatMessage() {
+    const ta = $("#manager-chat-body");
+    const body = ta.value.trim();
+    const chat = state.chat;
+    if (!body || !chat?.conversationId) return;
+    const btn = $("#manager-chat-send");
+    btn.disabled = true;
+    try {
+      await state.chatClient.send(chat.conversationId, body);
+      if (!alive()) return;
+      ta.value = "";
+      await pollManagerChat();
+    } catch (e) {
+      if (alive()) console.error(`manager chat send failed: ${e.message}`);
+    } finally {
+      if (alive()) btn.disabled = false;
+    }
+  }
+  function chatMessageEl(m) {
+    const el = document.createElement("div");
+    el.className = `chat-msg ${m.role}`;
+    const head = document.createElement("div");
+    head.className = "chat-msg-head";
+    head.textContent = CHAT_AUTHOR[m.role] ?? m.role;
+    const body = document.createElement("div");
+    body.className = "chat-msg-body";
+    body.textContent = m.text;
+    el.append(head, body);
+    return el;
+  }
+  function renderChatActivity() {
+    const el = $("#manager-chat-activity");
+    el.innerHTML = "";
+    const chat = state.chat;
+    if (!chat) return;
+    const working = !!chat.conversationId && !DONE_CONV_STATUSES.has(chat.status);
+    const text = chat.error ? "not connected" : !chat.conversationId ? "starting the manager\u2026" : working ? chat.action?.summary || "thinking\u2026" : "waiting for you";
+    el.classList.toggle("done", !working);
+    el.append(...activityNodes({ summary: text }, !working));
+  }
+  function renderManagerChat() {
+    const chat = state.chat;
+    const link = $("#manager-chat-link");
+    link.hidden = !chat?.url;
+    if (chat?.url) link.href = chat.url;
+    const log = $("#manager-chat-log");
+    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+    log.innerHTML = "";
+    if (chat?.messages.length) {
+      for (const m of chat.messages) log.appendChild(chatMessageEl(m));
+    } else {
+      const empty = document.createElement("p");
+      empty.className = "lane-empty";
+      empty.textContent = chat?.error ? `Could not reach the manager: ${chat.error}` : "Waking the manager up \u2014 it reads AGENTS.md and the board first.";
+      log.appendChild(empty);
+    }
+    renderChatActivity();
+    if (atBottom) log.scrollTop = log.scrollHeight;
+  }
   async function patchWorkspace(patch) {
     if (!state.ws) return;
     try {
@@ -2810,9 +3165,23 @@ ${TRIGGER_HINT}`;
     });
     on($("#drawer-close"), "click", closeDrawer);
     on($("#drawer-backdrop"), "click", closeDrawer);
+    on($("#manager-chat-open"), "click", openManagerChat);
+    on($("#manager-chat-close"), "click", closeManagerChat);
+    on($("#manager-chat-backdrop"), "click", closeManagerChat);
+    on($("#manager-chat-form"), "submit", (e) => {
+      e.preventDefault();
+      sendChatMessage();
+    });
+    on($("#manager-chat-body"), "keydown", ticketKeydown(sendChatMessage));
+    on($("#manager-chat-link"), "click", (e) => {
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+      e.preventDefault();
+      if (state.chat?.url) navigate(state.chat.url);
+    });
     on(document, "keydown", (e) => {
       if (e.key !== "Escape") return;
       closeAccentMenu();
+      closeManagerChat();
       closeDrawer();
     });
     on($("#max-concurrent"), "change", (e) => {

@@ -20,6 +20,7 @@ import { BOARD_MARKUP } from "./markup.js";
 import { Store, DEFAULT_ACCENT } from "./store.js";
 import { Live } from "./live.js";
 import { Manager } from "./manager.js";
+import { ManagerChat } from "./managerchat.js";
 
 const HOST_API_VERSION = "1";
 // Canvas routes extension pages at /extensions/<extension>/<declared page path>.
@@ -48,7 +49,9 @@ const LANE_EMPTY = {
 
 const BOARD_POLL_MS = 5000;
 const AUTOMATION_POLL_MS = 15000;
+const CHAT_POLL_MS = 2000;
 const TRIGGER_HINT = "Click to run the manager now";
+const CHAT_AUTHOR = { user: "you", assistant: "manager" };
 
 /* ------------------------------------------------------------------ styles */
 
@@ -178,10 +181,12 @@ export function mountBoard({ container, path, navigate, host }) {
   }
 
   const store = new Store(host);
+  const live = new Live(host);
   const state = {
     store,
-    live: new Live(host),
+    live,
     manager: new Manager(host, store),
+    chatClient: new ManagerChat(host, store, live),
     workspaces: { available: [], selected: [] },
     ws: null,
     tickets: [],
@@ -194,6 +199,11 @@ export function mountBoard({ container, path, navigate, host }) {
     theme: readTheme(),
     pollTimer: null,
     automationTimer: null,
+    // manager chat: {wsId, conversationId, url, messages, cursor, status, action}
+    chat: null,
+    chatTimer: null,
+    chatOpen: false,
+    chatReturnFocus: null,
   };
 
   function readFlag(key) {
@@ -407,6 +417,9 @@ export function mountBoard({ container, path, navigate, host }) {
   }
 
   async function selectWorkspace(path, { historyMode = "push" } = {}) {
+    // A manager chat belongs to one workspace's board.
+    closeManagerChat();
+    state.chat = null;
     if (!path) {
       state.ws = null;
       try {
@@ -1059,6 +1072,157 @@ export function mountBoard({ container, path, navigate, host }) {
     }
   }
 
+  /* -------------------------------------------------------- manager chat */
+
+  /* "Talk to the manager" opens a conversation of its own, pre-loaded with the
+     manager skill (src/managerchat.js): it records what the user asks for in
+     AGENTS.md and reads the board and its worker conversations back to them.
+     It is NOT the cron manager that dispatches work, so nothing here touches
+     the automation or the badge. */
+
+  async function openManagerChat() {
+    if (!state.ws) return;
+    state.chatReturnFocus = document.activeElement;
+    state.chatOpen = true;
+    $("#manager-chat").hidden = false;
+    if (state.chat && state.chat.wsId !== state.ws.id) state.chat = null;
+    renderManagerChat();
+    $("#manager-chat-body").focus();
+    if (!state.chat) await startManagerChat();
+    if (alive()) startChatPolling();
+  }
+
+  function closeManagerChat() {
+    if (!state.chatOpen) return;
+    state.chatOpen = false;
+    $("#manager-chat").hidden = true;
+    stopChatPolling();
+    const back = state.chatReturnFocus;
+    state.chatReturnFocus = null;
+    if (back?.isConnected) back.focus();
+  }
+
+  async function startManagerChat() {
+    const ws = state.ws;
+    const chat = {
+      wsId: ws.id, conversationId: null, url: null,
+      messages: [], cursor: null, status: null, action: null, error: null,
+    };
+    state.chat = chat;
+    renderManagerChat();
+    try {
+      const id = await state.chatClient.start(ws);
+      if (!alive() || state.chat !== chat) return;
+      chat.conversationId = id;
+      chat.url = `/conversations/${id}`;
+    } catch (e) {
+      if (!alive()) return;
+      console.error(`manager chat failed to start: ${e.message}`);
+      chat.error = e.message;
+    }
+    renderManagerChat();
+  }
+
+  function startChatPolling() {
+    stopChatPolling();
+    state.chatTimer = setInterval(pollManagerChat, CHAT_POLL_MS);
+    pollManagerChat();
+  }
+
+  function stopChatPolling() {
+    clearInterval(state.chatTimer);
+    state.chatTimer = null;
+  }
+  cleanups.push(stopChatPolling);
+
+  async function pollManagerChat() {
+    const chat = state.chat;
+    if (!chat?.conversationId) return;
+    try {
+      const d = await state.chatClient.messages(chat.conversationId, chat.cursor);
+      if (!alive() || state.chat !== chat) return;
+      chat.cursor = d.cursor ?? chat.cursor;
+      chat.status = state.live.conversationStatus(chat.conversationId);
+      if (d.latestAction) chat.action = d.latestAction;
+      if (d.messages.length) chat.messages.push(...d.messages);
+    } catch (e) {
+      if (!alive()) return;
+      console.error(`manager chat poll failed: ${e.message}`);
+    }
+    renderManagerChat();
+  }
+
+  async function sendChatMessage() {
+    const ta = $("#manager-chat-body");
+    const body = ta.value.trim();
+    const chat = state.chat;
+    if (!body || !chat?.conversationId) return;
+    const btn = $("#manager-chat-send");
+    btn.disabled = true;
+    try {
+      await state.chatClient.send(chat.conversationId, body);
+      if (!alive()) return;
+      ta.value = "";
+      // The message is an event on the conversation now, so the poll renders
+      // it — no optimistic copy to reconcile.
+      await pollManagerChat();
+    } catch (e) {
+      if (alive()) console.error(`manager chat send failed: ${e.message}`);
+    } finally {
+      if (alive()) btn.disabled = false;
+    }
+  }
+
+  function chatMessageEl(m) {
+    const el = document.createElement("div");
+    el.className = `chat-msg ${m.role}`;
+    const head = document.createElement("div");
+    head.className = "chat-msg-head";
+    head.textContent = CHAT_AUTHOR[m.role] ?? m.role;
+    const body = document.createElement("div");
+    body.className = "chat-msg-body";
+    body.textContent = m.text;
+    el.append(head, body);
+    return el;
+  }
+
+  function renderChatActivity() {
+    const el = $("#manager-chat-activity");
+    el.innerHTML = "";
+    const chat = state.chat;
+    if (!chat) return;
+    const working = !!chat.conversationId && !DONE_CONV_STATUSES.has(chat.status);
+    const text = chat.error ? "not connected"
+      : !chat.conversationId ? "starting the manager…"
+      : working ? (chat.action?.summary || "thinking…")
+      : "waiting for you";
+    el.classList.toggle("done", !working);
+    el.append(...activityNodes({ summary: text }, !working));
+  }
+
+  function renderManagerChat() {
+    const chat = state.chat;
+    const link = $("#manager-chat-link");
+    link.hidden = !chat?.url;
+    if (chat?.url) link.href = chat.url;
+
+    const log = $("#manager-chat-log");
+    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+    log.innerHTML = "";
+    if (chat?.messages.length) {
+      for (const m of chat.messages) log.appendChild(chatMessageEl(m));
+    } else {
+      const empty = document.createElement("p");
+      empty.className = "lane-empty";
+      empty.textContent = chat?.error
+        ? `Could not reach the manager: ${chat.error}`
+        : "Waking the manager up — it reads AGENTS.md and the board first.";
+      log.appendChild(empty);
+    }
+    renderChatActivity();
+    if (atBottom) log.scrollTop = log.scrollHeight;
+  }
+
   /* ------------------------------------------------------------ settings */
 
   async function patchWorkspace(patch) {
@@ -1182,10 +1346,27 @@ export function mountBoard({ container, path, navigate, host }) {
 
     on($("#drawer-close"), "click", closeDrawer);
     on($("#drawer-backdrop"), "click", closeDrawer);
+
+    on($("#manager-chat-open"), "click", openManagerChat);
+    on($("#manager-chat-close"), "click", closeManagerChat);
+    on($("#manager-chat-backdrop"), "click", closeManagerChat);
+    on($("#manager-chat-form"), "submit", (e) => {
+      e.preventDefault();
+      sendChatMessage();
+    });
+    on($("#manager-chat-body"), "keydown", ticketKeydown(sendChatMessage));
+    // Conversations live in Canvas: route the link through the host.
+    on($("#manager-chat-link"), "click", (e) => {
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+      e.preventDefault();
+      if (state.chat?.url) navigate(state.chat.url);
+    });
+
     // Document-level so Escape works wherever focus is - removed on dispose.
     on(document, "keydown", (e) => {
       if (e.key !== "Escape") return;
       closeAccentMenu();
+      closeManagerChat();
       closeDrawer();
     });
 

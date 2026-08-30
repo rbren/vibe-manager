@@ -17,6 +17,9 @@ const state = {
   showVerified: localStorage.getItem("vibe.showVerified") === "1",
   newTicketFiles: [],    // File objects staged for the next ticket
   theme: localStorage.getItem("vibe.theme") === "light" ? "light" : "dark",
+  chat: null,            // manager chat: {wsId, conversationId, url, messages, cursor, status, action}
+  chatTimer: null,
+  chatOpen: false,
 };
 
 const STATUS_LABEL = {
@@ -186,6 +189,9 @@ function syncURL(mode) {
 }
 
 async function selectWorkspace(path, { historyMode = "push" } = {}) {
+  // A manager chat belongs to one workspace's board.
+  closeManagerChat();
+  state.chat = null;
   if (!path) {
     state.ws = null;
     localStorage.removeItem("vibe.workspace");
@@ -766,6 +772,158 @@ async function appendEntry() {
   }
 }
 
+/* ---------------------------------------------------------- manager chat */
+
+/* "Talk to the manager" opens a conversation of its own, pre-loaded by the
+   backend with the manager skill (app.py's manager_chat_skill): it records
+   what the user asks for in AGENTS.md and reads the board and its worker
+   conversations back to them. It is NOT the cron manager that dispatches
+   work, so nothing here touches the topbar badge. */
+
+const CHAT_POLL_MS = 2000;
+const CHAT_AUTHOR = { user: "you", assistant: "manager" };
+
+async function openManagerChat() {
+  if (!state.ws) return;
+  state.chatReturnFocus = document.activeElement;
+  state.chatOpen = true;
+  $("#manager-chat").hidden = false;
+  if (state.chat && state.chat.wsId !== state.ws.id) state.chat = null;
+  renderManagerChat();
+  $("#manager-chat-body").focus();
+  if (!state.chat) await startManagerChat();
+  startChatPolling();
+}
+
+function closeManagerChat() {
+  if (!state.chatOpen) return;
+  state.chatOpen = false;
+  $("#manager-chat").hidden = true;
+  clearInterval(state.chatTimer);
+  const back = state.chatReturnFocus;
+  state.chatReturnFocus = null;
+  if (back?.isConnected) back.focus();
+}
+
+async function startManagerChat() {
+  const wsId = state.ws.id;
+  const chat = {
+    wsId, conversationId: null, url: null,
+    messages: [], cursor: null, status: null, action: null, error: null,
+  };
+  state.chat = chat;
+  renderManagerChat();
+  try {
+    const d = await api(`/api/workspaces/${wsId}/manager-chat`, { method: "POST" });
+    if (state.chat !== chat) return;  // workspace changed while we were starting
+    chat.conversationId = d.conversation_id;
+    chat.url = d.conversation_url;
+  } catch (e) {
+    console.error(`manager chat failed to start: ${e.message}`);
+    chat.error = e.message;
+  }
+  renderManagerChat();
+}
+
+function startChatPolling() {
+  clearInterval(state.chatTimer);
+  state.chatTimer = setInterval(pollManagerChat, CHAT_POLL_MS);
+  pollManagerChat();
+}
+
+async function pollManagerChat() {
+  const chat = state.chat;
+  if (!chat?.conversationId) return;
+  // The cursor is the newest event seen, not the newest message, so a manager
+  // busy running tools doesn't get its whole event log re-read every poll.
+  const q = chat.cursor ? `?after=${encodeURIComponent(chat.cursor)}` : "";
+  try {
+    const d = await api(
+      `/api/workspaces/${chat.wsId}/manager-chat/${chat.conversationId}/messages${q}`);
+    if (state.chat !== chat) return;
+    chat.cursor = d.cursor ?? chat.cursor;
+    chat.status = d.status;
+    if (d.latest_action) chat.action = d.latest_action;
+    if (d.messages.length) chat.messages.push(...d.messages);
+  } catch (e) {
+    console.error(`manager chat poll failed: ${e.message}`);
+  }
+  renderManagerChat();
+}
+
+async function sendChatMessage() {
+  const ta = $("#manager-chat-body");
+  const body = ta.value.trim();
+  const chat = state.chat;
+  if (!body || !chat?.conversationId) return;
+  const btn = $("#manager-chat-send");
+  btn.disabled = true;
+  try {
+    await api(
+      `/api/workspaces/${chat.wsId}/manager-chat/${chat.conversationId}/messages`,
+      { method: "POST", body: JSON.stringify({ body }) },
+    );
+    ta.value = "";
+    // The message is an event on the conversation now, so the poll renders it
+    // — no optimistic copy to reconcile.
+    await pollManagerChat();
+  } catch (e) {
+    console.error(`manager chat send failed: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function chatMessageEl(m) {
+  const el = document.createElement("div");
+  el.className = `chat-msg ${m.role}`;
+  const head = document.createElement("div");
+  head.className = "chat-msg-head";
+  head.textContent = CHAT_AUTHOR[m.role] ?? m.role;
+  const body = document.createElement("div");
+  body.className = "chat-msg-body";
+  body.textContent = m.text;
+  el.append(head, body);
+  return el;
+}
+
+function renderChatActivity() {
+  const el = $("#manager-chat-activity");
+  el.innerHTML = "";
+  const chat = state.chat;
+  if (!chat) return;
+  const working = !!chat.conversationId && !DONE_CONV_STATUSES.has(chat.status);
+  const text = chat.error ? "not connected"
+    : !chat.conversationId ? "starting the manager…"
+    : working ? (chat.action?.summary || "thinking…")
+    : "waiting for you";
+  el.classList.toggle("done", !working);
+  el.append(...activityNodes({ summary: text }, !working));
+}
+
+function renderManagerChat() {
+  const chat = state.chat;
+  const link = $("#manager-chat-link");
+  link.hidden = !chat?.url;
+  if (chat?.url) link.href = chat.url;
+
+  const log = $("#manager-chat-log");
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+  log.innerHTML = "";
+  if (chat?.messages.length) {
+    for (const m of chat.messages) log.appendChild(chatMessageEl(m));
+  } else {
+    const empty = document.createElement("p");
+    empty.className = "lane-empty";
+    empty.textContent = chat?.error
+      ? `Could not reach the manager: ${chat.error}`
+      : "Waking the manager up — it reads AGENTS.md and the board first.";
+    log.appendChild(empty);
+  }
+  renderChatActivity();
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
 /* -------------------------------------------------------------- settings */
 
 async function patchWorkspace(patch) {
@@ -873,9 +1031,17 @@ function wire() {
 
   $("#drawer-close").addEventListener("click", closeDrawer);
   $("#drawer-backdrop").addEventListener("click", closeDrawer);
+
+  $("#manager-chat-open").addEventListener("click", openManagerChat);
+  $("#manager-chat-close").addEventListener("click", closeManagerChat);
+  $("#manager-chat-backdrop").addEventListener("click", closeManagerChat);
+  $("#manager-chat-form").addEventListener("submit", (e) => { e.preventDefault(); sendChatMessage(); });
+  $("#manager-chat-body").addEventListener("keydown", ticketKeydown(sendChatMessage));
+
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     closeAccentMenu();
+    closeManagerChat();
     closeDrawer();
   });
 

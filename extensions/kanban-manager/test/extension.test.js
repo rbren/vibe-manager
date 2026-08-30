@@ -104,6 +104,10 @@ function hostWithStore({
      is how a deleted conversation looks. */
   conversations = {},
   createdAutomationId = "auto-created",
+  /* Metadata (and seeded `events`) the agent server answers with for a
+     conversation created through POST /api/conversations — the manager chat. */
+  createdConversationId = "conv-created",
+  createdConversation = null,
   /* Awaited before a download is served, so a test can hold a read open and
      make a response land after something else happened. */
   beforeRead = null,
@@ -134,6 +138,12 @@ function hostWithStore({
           }
           return automations[id];
         }
+        if (path === "/api/conversations" && method === "POST") {
+          conversations[createdConversationId] = createdConversation || {
+            id: createdConversationId, execution_status: "running", events: [],
+          };
+          return { id: createdConversationId };
+        }
         if (path.startsWith("/api/conversations/")) {
           const rest = path.slice("/api/conversations/".length);
           const meta = conversations[rest.split(/[?/]/)[0]];
@@ -143,6 +153,21 @@ function hostWithStore({
             throw err;
           }
           if (rest.includes("/events/search")) return { items: meta.events || [] };
+          if (rest.endsWith("/events") && method === "POST") {
+            // A user message becomes an event on the conversation, which is
+            // how the chat window gets it back.
+            meta.events = [...(meta.events || []), {
+              id: `ev-${(meta.events || []).length + 1}`,
+              kind: "MessageEvent",
+              source: "user",
+              timestamp: new Date(Date.now() + 1000).toISOString(),
+              llm_message: {
+                role: body?.role,
+                content: (body?.content || []).map((c) => ({ type: "text", ...c })),
+              },
+            }];
+            return {};
+          }
           return meta;
         }
         if (path.startsWith("/api/file/download")) {
@@ -839,6 +864,144 @@ describe("worker activity indicator", () => {
         assert.equal(card(id).querySelector(".activity-check").textContent, "✓");
       }
     } finally {
+      dispose();
+    }
+  });
+});
+
+describe("talk to the manager", () => {
+  const home = "/home/tester";
+  const root = `${home}/.openhands/vibe-manager`;
+  const boardPath = `${root}/workspaces/w1/board.json`;
+  const workspace = {
+    id: "w1", name: "demo", path: "/git/demo", max_concurrent: 2, push_mode: "main",
+  };
+  const skillTurn = {
+    id: "e1", kind: "MessageEvent", source: "user", timestamp: "2026-05-21T10:00:00",
+    llm_message: {
+      role: "user",
+      content: [{ type: "text", text: "<!-- vibe-manager-skill -->\nYou are the Vibe Manager…" }],
+    },
+  };
+  const greeting = {
+    id: "e2", kind: "MessageEvent", source: "agent", timestamp: "2026-05-21T10:00:05",
+    llm_message: {
+      role: "assistant",
+      content: [{ type: "text", text: "3 queued, 1 agent working." }],
+    },
+  };
+
+  /* The agent settings come back through a raw fetch, because they need an
+     X-Expose-Secrets header the host client does not forward. */
+  function stubSettings() {
+    dom.store.set(
+      "openhands-backends",
+      JSON.stringify([{ id: "test-backend", host: "https://canvas.example", apiKey: "k" }]),
+    );
+    const original = globalThis.fetch;
+    const calls = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), init });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ agent_settings: { llm: { model: "m" }, tools: [] } }),
+      };
+    };
+    return { calls, restore: () => { globalThis.fetch = original; } };
+  }
+
+  async function mount() {
+    dom.store.clear();
+    const ctx = hostWithStore({
+      home,
+      files: {
+        [`${root}/index.json`]: { workspaces: [workspace] },
+        [boardPath]: { version: 1, workspace_id: "w1", tickets: [] },
+      },
+      createdConversation: {
+        id: "conv-created",
+        execution_status: "running",
+        events: [skillTurn, greeting],
+      },
+    });
+    const container = makeContainer();
+    const dispose = mountBoard({ container, path: "demo", navigate: () => {}, host: ctx.host });
+    await waitFor(() => ctx.calls.some((c) => c.path.includes(encodeURIComponent(boardPath))));
+    return { ...ctx, container, dispose };
+  }
+
+  const click = (el) => el.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+
+  it("starts a conversation pre-loaded with the manager skill", async () => {
+    const { container, calls, dispose } = await mount();
+    const settings = stubSettings();
+    try {
+      click(container.querySelector("#manager-chat-open"));
+      await waitFor(() =>
+        calls.some((c) => c.path === "/api/conversations" && c.method === "POST"));
+      const body = calls.find((c) => c.path === "/api/conversations" && c.method === "POST").body;
+
+      // Same workspace association the manager's own conversations get.
+      assert.deepEqual(body.workspace, { kind: "LocalWorkspace", working_dir: "/git/demo" });
+      assert.equal(body.worktree, false);
+      assert.deepEqual(body.tags, { workspace: "/git/demo", viberole: "manager_chat" });
+      assert.equal(body.agent_settings.tools, null, "default exec toolset, not a bare agent");
+
+      const skill = body.initial_message.content[0].text;
+      assert.match(skill, /## Manager/, "records requests under a Manager section");
+      assert.match(skill, /AGENTS\.md/);
+      assert.ok(skill.includes(`${root}/bin/w1/vibectl.py`), "knows how to read the board");
+      assert.match(skill, /execution_status/, "knows how to read the conversations");
+      assert.ok(skill.includes("/git/demo"), "names the project");
+    } finally {
+      settings.restore();
+      dispose();
+    }
+  });
+
+  it("shows the conversation as a chat and sends what the user types", async () => {
+    const { container, calls, dispose } = await mount();
+    const settings = stubSettings();
+    try {
+      click(container.querySelector("#manager-chat-open"));
+      assert.equal(container.querySelector("#manager-chat").hasAttribute("hidden"), false);
+
+      // The seeded skill is not a chat turn: only the greeting shows.
+      await waitFor(() => container.querySelectorAll("#manager-chat-log .chat-msg").length === 1);
+      const first = container.querySelector("#manager-chat-log .chat-msg");
+      assert.ok(first.classList.contains("assistant"));
+      assert.equal(first.querySelector(".chat-msg-body").textContent, "3 queued, 1 agent working.");
+      assert.equal(first.querySelector(".chat-msg-head").textContent, "manager");
+      // A running manager pulses, like a live card.
+      assert.ok(container.querySelector("#manager-chat-activity .activity-dot"));
+
+      container.querySelector("#manager-chat-body").value = "prioritise the login bug";
+      container.querySelector("#manager-chat-form").dispatchEvent(
+        new dom.window.Event("submit", { bubbles: true, cancelable: true }),
+      );
+      await waitFor(() =>
+        calls.some((c) => c.path === "/api/conversations/conv-created/events" && c.method === "POST"));
+      const sent = calls.find(
+        (c) => c.path === "/api/conversations/conv-created/events" && c.method === "POST").body;
+      assert.equal(sent.content[0].text, "prioritise the login bug");
+      assert.equal(sent.run, true);
+
+      // It comes back from the conversation itself — no optimistic copy.
+      await waitFor(() => container.querySelectorAll("#manager-chat-log .chat-msg.user").length === 1);
+      assert.equal(
+        container.querySelector(".chat-msg.user .chat-msg-body").textContent,
+        "prioritise the login bug",
+      );
+      assert.equal(container.querySelector("#manager-chat-body").value, "");
+
+      // Escape closes it and stops the poll.
+      const escape = new dom.window.Event("keydown", { bubbles: true, cancelable: true });
+      Object.assign(escape, { key: "Escape" });
+      dom.document.dispatchEvent(escape);
+      assert.equal(container.querySelector("#manager-chat").hasAttribute("hidden"), true);
+    } finally {
+      settings.restore();
       dispose();
     }
   });

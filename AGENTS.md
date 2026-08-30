@@ -79,6 +79,50 @@ via /etc/nginx/.htpasswd).
     "new" entries are its own comments. Tests:
     `python tests/test_manager_loop_guard.py` (pure stdlib) and
     `.venv/bin/python tests/test_dispatched_count_absorbs_manager_notes.py`.
+- **"Talk to the manager" chat** (user request 2026-05-21): a `Talk to the
+  manager` button sits next to `Send request` on the new-request form and opens
+  a modal chat window backed by a conversation of its own, pre-loaded with a
+  manager skill. The skill (app.py `manager_chat_skill`, mirrored for the
+  extension in `src/managerchat.js`) tells the agent to (a) record every
+  request the user makes in the project's `AGENTS.md` under a single top-level
+  `## Manager` section — dated, in the user's words, committed so the checkout
+  stays clean — and (b) how to read the board and the conversations running on
+  it. It deliberately does NOT dispatch workers: the cron manager owns
+  concurrency, conflict serialization and one-conversation-per-ticket, none of
+  which a chat agent can see.
+  - The conversation is created through the SAME path as every other one
+    (`POST /api/manager/conversations` internally, so `workspace.working_dir`
+    stays the PROJECT dir and the tags are set), with `worktree: false` (it
+    edits AGENTS.md in the checkout) and **`viberole: manager_chat`** — a third
+    role next to worker/manager. The distinct role matters: `role == "manager"`
+    is what writes `workspaces.manager_conversation_id`, which drives the
+    topbar badge and the automation's "a manager is already running" guard, so
+    a chat must never claim it.
+  - SPA endpoints: `POST /api/workspaces/<id>/manager-chat` (start),
+    `POST|GET /api/workspaces/<id>/manager-chat/<conv_id>/messages` (send /
+    poll). The GET replays the conversation's `MessageEvent`s as
+    {role, text, timestamp} plus `status` and `latest_action`; the session key
+    never reaches the browser. The pre-loaded skill starts with
+    `MANAGER_CHAT_MARKER` (`<!-- vibe-manager-skill -->`) purely so that first
+    turn can be hidden — it is not something the user typed. Polling is
+    incremental via `cursor` = the newest EVENT seen (not the newest message),
+    echoed back as `after`; `timestamp__gte` on the agent server is inclusive,
+    so the boundary event is dropped client-side. Note the events/search `kind`
+    filter returns nothing on this agent server — filter by kind in code.
+  - A sent message is NOT rendered optimistically: posting it creates the event
+    on the conversation, and the immediate re-poll brings it back, so there is
+    no local copy to reconcile.
+  - The chat is per workspace and per session (in `state.chat`); switching
+    workspaces closes it and drops it, so a reload starts a fresh conversation.
+  - The extension has the same button and modal. It has no server, so
+    `src/managerchat.js` creates the conversation itself (raw `fetch` for
+    `GET /api/settings` with `X-Expose-Secrets: encrypted`, which the host
+    client cannot send, then `POST /api/conversations` through the host). Its
+    copy of the skill differs in ONE section: this board lives in the JSON
+    store, so the manager reads it with `<store>/bin/<ws_id>/vibectl.py`
+    instead of curling the vibe API. Keep the two skills in step otherwise.
+  - Tests: `tests/test_manager_chat.py` and the "talk to the manager" cases in
+    `extensions/kanban-manager/test/extension.test.js`.
 - **Ticket attachments**: users can attach files/images to tickets (paperclip
   button on the new-ticket form and in the drawer's append form; drawer shows
   image thumbnails + file chips, cards show a count chip). `attachments`
@@ -345,8 +389,9 @@ via /etc/nginx/.htpasswd).
 - Every conversation started via `/api/manager/conversations` gets tags:
   `workspace=<project path>` (so the canvas UI groups it under the right
   workspace ŌĆö the worktree working_dir alone is NOT enough) and
-  `viberole=worker|manager`. Follow-ups to an existing conversation retro-tag
-  it if the `workspace` tag is missing (self-heals pre-tagging conversations).
+  `viberole=worker|manager|manager_chat`. Follow-ups to an existing
+  conversation retro-tag it if the `workspace` tag is missing (self-heals
+  pre-tagging conversations).
   Manager conversation ids are also recorded on
   `workspaces.manager_conversation_id`; the cron bails out if that
   conversation is still running (tag-verified), so overlapping managers can't

@@ -455,6 +455,10 @@ class NewEntry(BaseModel):
     author: str = "user"
 
 
+class ChatMessage(BaseModel):
+    body: str
+
+
 class Reorder(BaseModel):
     status: str
     ordered_ids: list[str]
@@ -1191,6 +1195,200 @@ def manager_start_conversation(req: StartConversation):
             )
     return {"id": conv_id, "followup": False,
             "conversation_url": f"{CANVAS_BASE}/conversations/{conv_id}"}
+
+
+# --------------------------------------------------------------- manager chat
+#
+# "Talk to the manager" on the new-request form: a conversation the user chats
+# with in a modal, pre-loaded with the manager skill below. It is NOT the cron
+# manager — the role tag is `manager_chat`, so it never lands on
+# workspaces.manager_conversation_id and the automation's overlap guard and the
+# topbar badge keep tracking the dispatching manager only.
+
+MANAGER_CHAT_ROLE = "manager_chat"
+# First line of the pre-loaded skill. The chat window replays the conversation
+# from the agent server's events, and this is how the seeded prompt is told
+# apart from what the user actually typed.
+MANAGER_CHAT_MARKER = "<!-- vibe-manager-skill -->"
+# Pages of 100 events scanned per poll; with the cursor the SPA sends back,
+# one page is the normal case and this only caps a cold first read.
+MANAGER_CHAT_MAX_PAGES = 20
+
+
+def manager_chat_skill(ws: dict) -> str:
+    """The manager skill a "talk to the manager" conversation is pre-loaded with.
+
+    Two jobs: record what the user asks for in AGENTS.md under a `Manager`
+    section, and know how to read the board and the conversations running on it.
+    Dispatching deliberately stays with the cron manager (automation/main.py),
+    whose concurrency, conflict and one-conversation-per-ticket rules a chat
+    agent would not see.
+    """
+    path = ws["path"]
+    ws_id = ws["id"]
+    push = (
+        "pull requests (workers branch and open a PR)"
+        if ws["push_mode"] == "pr"
+        else "push to the default branch directly"
+    )
+    return f"""{MANAGER_CHAT_MARKER}
+You are the **Vibe Manager** for the project at `{path}` (workspace id `{ws_id}`), talking to the user in a chat window on their kanban board. Replies land in a small chat panel: keep them short, plain and conversational.
+
+## What you do here
+- Listen to the user: new requests, questions about the board, complaints about how the work is going.
+- Write every request down in `AGENTS.md` (see below) so it survives this conversation.
+- Answer questions about the board and the agents working on it from the LIVE state, never from memory.
+- You do NOT write feature code, and you do NOT dispatch workers from this chat. The manager automation polls this board every minute and does the dispatching, with rules about concurrency and conflicting tickets that you cannot see from here. Tell the user what you recorded and let it pick the work up.
+
+## Recording requests in AGENTS.md
+1. `AGENTS.md` at `{path}` is the project's standing memory — read it first.
+2. Keep ONE top-level `## Manager` section in it (append the section at the end of the file if it isn't there yet, and create the file if it doesn't exist).
+3. Under it, one bullet per request the user makes: today's date (take it from `date -I`, don't guess), the request in the user's own words (one or two lines), and what you did about it. Update the existing bullet when the user refines a request instead of adding a second one.
+4. Write the bullet as soon as the request is made, before you write a long answer.
+5. Leave the checkout clean: `git add AGENTS.md && git commit -m "Manager: <short>"` after editing, and push it (this workspace lands work via {push}). Never touch other files, and never commit someone else's work in progress.
+
+## Reading the board
+No auth is needed for the vibe API from this machine:
+- Board: `curl -s {VIBE_API}/api/manager/workspaces/{ws_id}/snapshot`
+  Each ticket has `status` (pending/in_progress/needs_input/finished/verified), `entries` (the request text, oldest first), `sort_order` (the user's priority inside a column, lower first), `title`, `manager_note`, `conversation_id`, `pr_url`, `attachments` and — while a worker is running — `conversation_status` and `latest_action` (what the agent is doing right now).
+- Dispatcher health: `curl -s {VIBE_API}/api/workspaces/{ws_id}/automation`
+  Says whether the manager automation is enabled, when it last ran, whether a run failed, and what the manager conversation is doing.
+
+## Reading the conversations on the board
+Every dispatched ticket has a worker conversation on the agent server. Fetch the credentials once:
+`curl -s {VIBE_API}/api/manager/agent-credentials` → `agent_server` + `session_api_key`.
+Then, with `-H "X-Session-API-Key: <session_api_key>"`:
+- `GET <agent_server>/api/conversations/<conversation_id>?include_skills=false` → `execution_status` (running|idle|finished|error|stuck|paused) and `agent.llm.model`.
+- `GET <agent_server>/api/conversations/<conversation_id>/events/search?sort_order=TIMESTAMP_DESC&limit=20` → the recent events: `MessageEvent`s carry the agent's own words in `llm_message.content[].text`, `ActionEvent`s the commands it ran.
+
+## Right now
+Read `AGENTS.md` and the board snapshot, then greet the user in ONE sentence that says where the board stands (e.g. "3 queued, 1 agent working"). Then wait — answer what they ask, record what they request."""
+
+
+def _workspace(ws_id: str) -> dict:
+    with db() as conn:
+        row = conn.execute("SELECT * FROM workspaces WHERE id=?", (ws_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "workspace not found")
+    return workspace_dict(row)
+
+
+@app.post("/api/workspaces/{ws_id}/manager-chat")
+def start_manager_chat(ws_id: str):
+    """Start a conversation the user chats with about this workspace."""
+    ws = _workspace(ws_id)
+    conv = manager_start_conversation(
+        StartConversation(
+            working_dir=ws["path"],
+            prompt=manager_chat_skill(ws),
+            # Like the cron manager: the chat manager maintains AGENTS.md in
+            # the workspace itself, so no isolation worktree.
+            worktree=False,
+            role=MANAGER_CHAT_ROLE,
+            title=f"💬 Manager chat — {ws['name']}",
+            max_iterations=200,
+        )
+    )
+    return {
+        "workspace_id": ws_id,
+        "conversation_id": conv["id"],
+        "conversation_url": conv["conversation_url"],
+    }
+
+
+@app.post("/api/workspaces/{ws_id}/manager-chat/{conv_id}/messages")
+def manager_chat_send(ws_id: str, conv_id: str, req: ChatMessage):
+    """Send the user's chat message to a manager-chat conversation."""
+    body = req.body.strip()
+    if not body:
+        raise HTTPException(400, "empty message")
+    ws = _workspace(ws_id)
+    manager_start_conversation(
+        StartConversation(
+            working_dir=ws["path"],
+            prompt=body,
+            conversation_id=conv_id,
+            role=MANAGER_CHAT_ROLE,
+        )
+    )
+    return {"sent": True}
+
+
+def manager_chat_message(event: dict) -> dict | None:
+    """A chat turn from an agent-server event, or None for everything else."""
+    if event.get("kind") != "MessageEvent":
+        return None
+    msg = event.get("llm_message") or {}
+    role = msg.get("role") or ("user" if event.get("source") == "user" else "assistant")
+    if role not in ("user", "assistant"):
+        return None
+    parts = [
+        c.get("text", "")
+        for c in msg.get("content") or []
+        if isinstance(c, dict) and c.get("type") == "text"
+    ]
+    text = "\n".join(p for p in parts if p).strip()
+    # The pre-loaded skill is not something the user said — hide it.
+    if not text or text.startswith(MANAGER_CHAT_MARKER):
+        return None
+    return {
+        "id": event.get("id"),
+        "role": role,
+        "text": text,
+        "timestamp": event.get("timestamp"),
+    }
+
+
+@app.get("/api/workspaces/{ws_id}/manager-chat/{conv_id}/messages")
+def manager_chat_messages(ws_id: str, conv_id: str, after: str | None = None):
+    """Chat turns since `after`, plus what the manager is doing right now.
+
+    `after` is the `cursor` from the previous poll (the newest event scanned,
+    not the newest message), so a manager that spends a minute running tools
+    doesn't get its whole event log re-read every couple of seconds.
+    """
+    _workspace(ws_id)
+    messages: list[dict] = []
+    latest_action = None
+    cursor = after
+    params: dict = {"sort_order": "TIMESTAMP", "limit": 100}
+    if after:
+        params["timestamp__gte"] = after
+    with httpx.Client(timeout=30) as client:
+        for _ in range(MANAGER_CHAT_MAX_PAGES):
+            r = client.get(
+                f"{AGENT_SERVER}/api/conversations/{conv_id}/events/search",
+                headers={"X-Session-API-Key": SESSION_KEY},
+                params=params,
+            )
+            if r.status_code == 404:
+                raise HTTPException(404, "conversation not found")
+            r.raise_for_status()
+            data = r.json()
+            for event in data.get("items", []):
+                ts = event.get("timestamp")
+                if ts and (cursor is None or ts > cursor):
+                    cursor = ts
+                if after and ts and ts <= after:
+                    continue  # timestamp__gte is inclusive; `after` is not
+                msg = manager_chat_message(event)
+                if msg:
+                    messages.append(msg)
+                action = extract_action_summary(event)
+                if action:
+                    latest_action = action
+            page_id = data.get("next_page_id")
+            if not page_id:
+                break
+            params = {**params, "page_id": page_id}
+    return {
+        "conversation_id": conv_id,
+        "messages": messages,
+        "cursor": cursor,
+        "status": get_conversation_status(conv_id),
+        "latest_action": latest_action,
+        "conversation_url": f"{CANVAS_BASE}/conversations/{conv_id}",
+    }
 
 
 @app.patch("/api/manager/tickets/{ticket_id}")
