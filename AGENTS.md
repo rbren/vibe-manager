@@ -745,6 +745,12 @@ Operational notes for the extension:
   per-workspace manager CLI copy — it is written at install time and does NOT
   follow the repo. Skipping (3) leaves `vibectl snapshot` crashing on the new
   layout while the automation itself succeeds.
+  - **Deploy is standing policy (user request 2026-05-21), not a per-ticket
+    ask**: every time a change lands on origin/master the manager runs the
+    full deploy below AND republishes the extension to
+    DevinVinson/canvas-extensions — push the file copy to the existing open PR
+    branch (`rename-to-kanban-manager`), opening a new PR only if that one is
+    closed/merged.
   - Full deploy of a store/automation change, in order (2026-08-30): push to
     origin/master → in `/root/git/vibe-manager` `git pull --ff-only` (or reset
     to origin/master once its content is verified contained) and
