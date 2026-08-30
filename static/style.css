@@ -1,6 +1,6 @@
 /* vibe — agent dispatch board.
    Design rule: hue encodes lane (pending / in progress / needs you / finished /
-   verified); controls stay neutral. The flare colour marks focus, the brand and
+   verified); controls stay neutral. The flare colour marks focus and
    drop targets. Dark is the default; light is a full token override under
    html[data-theme="light"]. Every colour below MUST be a var() token declared in
    one of the two blocks, or light mode breaks.
@@ -181,7 +181,7 @@ body {
 
 /* ------------------------------------------------------------------ topbar */
 .topbar {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; justify-content: flex-end;
   gap: var(--s5);
   padding: var(--s3) var(--s5);
   border-bottom: 1px solid var(--line);
@@ -189,23 +189,6 @@ body {
   backdrop-filter: blur(10px);
   position: sticky; top: 0; z-index: 20;
   flex-wrap: wrap;
-}
-
-.brand { display: flex; align-items: center; gap: var(--s3); }
-.brand-mark { display: flex; align-items: flex-end; gap: 3px; height: 22px; }
-.brand-mark i { display: block; width: 4px; border-radius: 2px; }
-.brand-mark i:nth-child(1) { height: 12px; background: var(--lane-progress); }
-.brand-mark i:nth-child(2) { height: 22px; background: var(--lane-input); }
-.brand-mark i:nth-child(3) { height: 16px; background: var(--lane-done); }
-.brand-text { display: flex; flex-direction: column; line-height: 1.1; }
-.brand-name {
-  font-family: var(--display); font-size: 1.25rem; font-weight: 700;
-  font-stretch: 112%; letter-spacing: -.01em;
-}
-.brand-sub {
-  font-family: var(--display); font-size: 0.625rem; font-weight: 500;
-  font-stretch: 118%; text-transform: uppercase; letter-spacing: .2em;
-  color: var(--text-faint);
 }
 
 .topbar-controls { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }

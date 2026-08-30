@@ -213,14 +213,6 @@ if __name__ == "__main__":
 // kanban-manager/src/markup.js
 var BOARD_MARKUP = `
 <header class="topbar">
-  <div class="brand">
-    <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-    <span class="brand-text">
-      <span class="brand-name">vibe</span>
-      <span class="brand-sub">agent dispatch</span>
-    </span>
-  </div>
-
   <div class="topbar-controls">
     <div class="control control-workspace">
       <select id="workspace-select" aria-label="Workspace"><option value="">Choose a workspace</option></select>
@@ -1125,7 +1117,7 @@ var STYLE_ELEMENT_ID = "vibe-ext-style";
 var EXTENSION_CSS = true ? `.vibe-ext { --vibe-rem: 1.2rem; }
 /* vibe \u2014 agent dispatch board.
    Design rule: hue encodes lane (pending / in progress / needs you / finished /
-   verified); controls stay neutral. The flare colour marks focus, the brand and
+   verified); controls stay neutral. The flare colour marks focus and
    drop targets. Dark is the default; light is a full token override under
    html[data-theme="light"]. Every colour below MUST be a var() token declared in
    one of the two blocks, or light mode breaks.
@@ -1306,7 +1298,7 @@ var EXTENSION_CSS = true ? `.vibe-ext { --vibe-rem: 1.2rem; }
 
 /* ------------------------------------------------------------------ topbar */
 .vibe-ext .topbar {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; justify-content: flex-end;
   gap: var(--s5);
   padding: var(--s3) var(--s5);
   border-bottom: 1px solid var(--line);
@@ -1314,23 +1306,6 @@ var EXTENSION_CSS = true ? `.vibe-ext { --vibe-rem: 1.2rem; }
   backdrop-filter: blur(10px);
   position: sticky; top: 0; z-index: 20;
   flex-wrap: wrap;
-}
-
-.vibe-ext .brand { display: flex; align-items: center; gap: var(--s3); }
-.vibe-ext .brand-mark { display: flex; align-items: flex-end; gap: 3px; height: 22px; }
-.vibe-ext .brand-mark i { display: block; width: 4px; border-radius: 2px; }
-.vibe-ext .brand-mark i:nth-child(1) { height: 12px; background: var(--lane-progress); }
-.vibe-ext .brand-mark i:nth-child(2) { height: 22px; background: var(--lane-input); }
-.vibe-ext .brand-mark i:nth-child(3) { height: 16px; background: var(--lane-done); }
-.vibe-ext .brand-text { display: flex; flex-direction: column; line-height: 1.1; }
-.vibe-ext .brand-name {
-  font-family: var(--display); font-size: calc(1.25 * var(--vibe-rem)); font-weight: 700;
-  font-stretch: 112%; letter-spacing: -.01em;
-}
-.vibe-ext .brand-sub {
-  font-family: var(--display); font-size: calc(0.625 * var(--vibe-rem)); font-weight: 500;
-  font-stretch: 118%; text-transform: uppercase; letter-spacing: .2em;
-  color: var(--text-faint);
 }
 
 .vibe-ext .topbar-controls { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }

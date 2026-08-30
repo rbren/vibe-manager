@@ -11,14 +11,6 @@
 
 export const BOARD_MARKUP = `
 <header class="topbar">
-  <div class="brand">
-    <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-    <span class="brand-text">
-      <span class="brand-name">vibe</span>
-      <span class="brand-sub">agent dispatch</span>
-    </span>
-  </div>
-
   <div class="topbar-controls">
     <div class="control control-workspace">
       <select id="workspace-select" aria-label="Workspace"><option value="">Choose a workspace</option></select>
