@@ -65,6 +65,11 @@ DEFAULT_ACCENT = "ember"
 # watching the conversation's accumulated cost (see automation/main.py).
 DEFAULT_TICKET_BUDGET = 10.0
 
+# Colour themes. Every UI preference is a workspace setting stored here rather
+# than in the browser, so a board looks the same from any browser.
+THEMES = ["dark", "light"]
+DEFAULT_THEME = "dark"
+
 app = FastAPI(title="Vibe Work Manager")
 
 # The Canvas Extension build of the SPA (extensions/kanban-manager) runs on the
@@ -117,6 +122,10 @@ def init_db() -> None:
                 max_concurrent INTEGER NOT NULL DEFAULT 3,
                 push_mode TEXT NOT NULL DEFAULT 'pr',
                 accent TEXT NOT NULL DEFAULT 'ember',
+                theme TEXT NOT NULL DEFAULT 'dark',
+                show_verified INTEGER NOT NULL DEFAULT 0,
+                llm_profile TEXT,
+                max_budget REAL NOT NULL DEFAULT 10.0,
                 automation_id TEXT,
                 created_at REAL NOT NULL
             );
@@ -159,6 +168,22 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE workspaces ADD COLUMN accent TEXT NOT NULL "
                 f"DEFAULT '{DEFAULT_ACCENT}'"
+            )
+        if "theme" not in cols:
+            conn.execute(
+                "ALTER TABLE workspaces ADD COLUMN theme TEXT NOT NULL "
+                f"DEFAULT '{DEFAULT_THEME}'"
+            )
+        if "show_verified" not in cols:
+            conn.execute(
+                "ALTER TABLE workspaces ADD COLUMN show_verified INTEGER NOT NULL DEFAULT 0"
+            )
+        if "llm_profile" not in cols:
+            conn.execute("ALTER TABLE workspaces ADD COLUMN llm_profile TEXT")
+        if "max_budget" not in cols:
+            conn.execute(
+                "ALTER TABLE workspaces ADD COLUMN max_budget REAL NOT NULL "
+                f"DEFAULT {DEFAULT_TICKET_BUDGET}"
             )
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(tickets)")}
         if "verified_at" not in cols:
@@ -455,6 +480,12 @@ class WorkspaceSettings(BaseModel):
     max_concurrent: int | None = None
     push_mode: str | None = None  # 'pr' | 'main'
     accent: str | None = None  # one of ACCENTS
+    theme: str | None = None  # 'dark' | 'light'
+    show_verified: bool | None = None
+    # Default request settings for new tickets. "" clears llm_profile back to
+    # "manager's choice"; None means "not part of this patch".
+    llm_profile: str | None = None
+    max_budget: float | None = None
 
 
 class NewTicket(BaseModel):
@@ -578,7 +609,9 @@ def ticket_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
 
 
 def workspace_dict(row: sqlite3.Row) -> dict:
-    return dict(row)
+    d = dict(row)
+    d["show_verified"] = bool(d.get("show_verified"))
+    return d
 
 
 # -------------------------------------------------------------------- workspaces
@@ -661,6 +694,22 @@ def update_workspace(ws_id: str, req: WorkspaceSettings):
             if req.accent not in ACCENTS:
                 raise HTTPException(400, f"accent must be one of: {', '.join(ACCENTS)}")
             conn.execute("UPDATE workspaces SET accent=? WHERE id=?", (req.accent, ws_id))
+        if req.theme is not None:
+            if req.theme not in THEMES:
+                raise HTTPException(400, f"theme must be one of: {', '.join(THEMES)}")
+            conn.execute("UPDATE workspaces SET theme=? WHERE id=?", (req.theme, ws_id))
+        if req.show_verified is not None:
+            conn.execute(
+                "UPDATE workspaces SET show_verified=? WHERE id=?",
+                (1 if req.show_verified else 0, ws_id),
+            )
+        if req.llm_profile is not None:
+            profile = req.llm_profile.strip() or None
+            conn.execute("UPDATE workspaces SET llm_profile=? WHERE id=?", (profile, ws_id))
+        if req.max_budget is not None:
+            if req.max_budget <= 0:
+                raise HTTPException(400, "max_budget must be positive")
+            conn.execute("UPDATE workspaces SET max_budget=? WHERE id=?", (req.max_budget, ws_id))
         conn.commit()
         return workspace_dict(conn.execute("SELECT * FROM workspaces WHERE id=?", (ws_id,)).fetchone())
 
@@ -779,15 +828,20 @@ def create_ticket(ws_id: str, req: NewTicket):
     body = req.body.strip()
     if not body:
         raise HTTPException(400, "empty ticket body")
-    budget = DEFAULT_TICKET_BUDGET if req.max_budget is None else req.max_budget
-    if budget <= 0:
-        raise HTTPException(400, "max_budget must be positive")
-    profile = (req.llm_profile or "").strip() or None
     now = time.time()
     tid = uuid.uuid4().hex[:12]
     with db() as conn:
-        if not conn.execute("SELECT 1 FROM workspaces WHERE id=?", (ws_id,)).fetchone():
+        ws = conn.execute("SELECT * FROM workspaces WHERE id=?", (ws_id,)).fetchone()
+        if not ws:
             raise HTTPException(404, "workspace not found")
+        # Omitted request settings fall back to the workspace's stored
+        # defaults (the ⚙ panel), then to the global default.
+        budget = req.max_budget
+        if budget is None:
+            budget = ws["max_budget"] or DEFAULT_TICKET_BUDGET
+        if budget <= 0:
+            raise HTTPException(400, "max_budget must be positive")
+        profile = (req.llm_profile or ws["llm_profile"] or "").strip() or None
         max_order = conn.execute(
             "SELECT COALESCE(MAX(sort_order), 0) FROM tickets WHERE workspace_id=? AND status='pending'",
             (ws_id,),

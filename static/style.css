@@ -222,6 +222,7 @@ select:hover, input[type=number]:hover { border-color: var(--text-faint); }
 .seg-btn {
   background: transparent; color: var(--text-dim); border: 0;
   padding: 7px 12px; font-family: var(--sans); font-size: 0.75rem; cursor: pointer;
+  white-space: nowrap;
 }
 .seg-btn:hover { color: var(--text); background: var(--ghost-bg-hover); }
 .seg-btn.active { background: var(--btn-bg); color: var(--btn-text); font-weight: 600; }
@@ -275,6 +276,25 @@ select:hover, input[type=number]:hover { border-color: var(--text-faint); }
 .accent-swatch[data-accent="orchid"] { --swatch: var(--accent-orchid); }
 .accent-swatch[data-accent="rose"] { --swatch: var(--accent-rose); }
 .accent-swatch[data-accent="slate"] { --swatch: var(--accent-slate); }
+
+/* ---------------------------------------------------- workspace settings */
+/* Everything the workspace remembers that isn't a one-click control lives in
+   this ⚙ popover: which agent runs a request, its budget, and where changes
+   land. */
+.control-settings { position: relative; }
+.settings-btn { padding: 8px 12px; font-size: 0.9375rem; line-height: 1; }
+.settings-btn.active {
+  color: var(--text); background: var(--ghost-bg-hover); border-color: var(--text-faint);
+}
+.settings-menu {
+  position: absolute; top: calc(100% + var(--s2)); right: 0; z-index: 30;
+  display: flex; flex-direction: column; gap: var(--s3);
+  padding: var(--s4); border-radius: var(--r-md);
+  background: var(--slab); border: 1px solid var(--line);
+  box-shadow: var(--shadow-panel);
+}
+.desk-setting { display: flex; align-items: center; gap: var(--s3); justify-content: space-between; }
+.desk-setting select { min-width: 12rem; }
 
 .mgr-badge {
   display: flex; align-items: center; gap: var(--s2);
@@ -349,16 +369,6 @@ select:hover, input[type=number]:hover { border-color: var(--text-faint); }
 }
 .attach-btn:hover { background: var(--ghost-bg-hover); border-color: var(--text-faint); }
 .talk-btn { white-space: nowrap; }
-.settings-btn.active {
-  color: var(--text); background: var(--ghost-bg-hover); border-color: var(--text-faint);
-}
-
-.desk-settings {
-  display: flex; flex-wrap: wrap; gap: var(--s4);
-  padding-top: var(--s3); border-top: 1px solid var(--line-soft);
-}
-.desk-setting { display: flex; align-items: center; gap: var(--s2); }
-.desk-setting select { min-width: 12rem; }
 
 #new-ticket-submit, #append-form button[type=submit] {
   background: var(--btn-bg); color: var(--btn-text); border: 0;

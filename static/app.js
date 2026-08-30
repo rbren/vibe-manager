@@ -14,7 +14,9 @@ const state = {
   automationTimer: null,
   dragging: null,        // { id, status }
   returnFocus: null,     // element focused before the drawer opened
-  showVerified: localStorage.getItem("vibe.showVerified") === "1",
+  // Preferences live on the workspace record, server-side. Until one is open
+  // the theme falls back to the paint-time hint the head script reads.
+  showVerified: false,
   newTicketFiles: [],    // File objects staged for the next ticket
   theme: localStorage.getItem("vibe.theme") === "light" ? "light" : "dark",
   chat: null,            // manager chat: {wsId, conversationId, url, messages, cursor, status, action}
@@ -210,6 +212,7 @@ async function selectWorkspace(path, { historyMode = "push" } = {}) {
     });
     state.ws = ws;
     state.automation = null;
+    adoptWorkspacePrefs();
     localStorage.setItem("vibe.workspace", path);
     syncURL(historyMode);
     await refreshBoard();
@@ -230,6 +233,7 @@ async function refreshBoard() {
     const data = await api(`/api/workspaces/${state.ws.id}/board`);
     state.ws = data.workspace;
     state.tickets = data.tickets;
+    adoptWorkspacePrefs();
     renderBoard();
     renderSettings();
     if (state.drawerTicketId) renderDrawer();
@@ -350,23 +354,41 @@ function render() {
   $("#empty-state").hidden = has;
   $("#board-wrap").hidden = !has;
   $("#ctl-concurrency").hidden = !has;
-  $("#ctl-pushmode").hidden = !has;
+  $("#ctl-settings").hidden = !has;
   $("#ctl-accent").hidden = !has;
   $("#show-verified").hidden = !has;
-  if (!has) closeAccentMenu();
+  $("#manager-chat-open").hidden = !has;
+  if (!has) { closeAccentMenu(); closeSettingsMenu(); }
   applyAccent();
+  applyTheme();
   renderMgrBadge();
   if (has) { renderBoard(); renderSettings(); }
 }
 
+/* Mirror the workspace's stored settings into the controls. Called on every
+   board poll, so an input the user is editing is left alone. */
 function renderSettings() {
   if (!state.ws) return;
   const mc = $("#max-concurrent");
   if (document.activeElement !== mc) mc.value = state.ws.max_concurrent;
+  const budget = $("#settings-budget");
+  if (document.activeElement !== budget) budget.value = state.ws.max_budget ?? DEFAULT_BUDGET;
+  const profile = $("#settings-profile");
+  if (document.activeElement !== profile) profile.value = state.ws.llm_profile ?? "";
   $$("#push-mode .seg-btn").forEach((b) =>
     b.classList.toggle("active", b.dataset.mode === state.ws.push_mode));
   applyAccent();
+  applyTheme();
+  renderVerifiedToggle();
   renderMgrBadge();
+}
+
+/* The board payload is the source of truth for the UI preferences: adopt them
+   whenever a workspace's record arrives. */
+function adoptWorkspacePrefs() {
+  if (!state.ws) return;
+  state.theme = state.ws.theme === "light" ? "light" : "dark";
+  state.showVerified = !!state.ws.show_verified;
 }
 
 function shortModel(model) {
@@ -585,19 +607,26 @@ async function reorderWithin(status, draggedId, targetId, above) {
 
 /* --------------------------------------------------------------- tickets */
 
-/* The ⚙ panel on the new-request form: which agent runs the ticket and how
-   much it may spend. Defaults are "manager's choice" (empty profile — the
-   manager keeps picking per task) and DEFAULT_BUDGET. */
+/* The ⚙ popover in the topbar: which agent runs a request, how much it may
+   spend, and where its changes land. All three are workspace settings stored
+   server-side. Defaults are "manager's choice" (empty profile — the manager
+   keeps picking per task) and DEFAULT_BUDGET. */
 
-function toggleTicketSettings() {
-  const panel = $("#new-ticket-settings-panel");
-  panel.hidden = !panel.hidden;
-  $("#new-ticket-settings").setAttribute("aria-expanded", String(!panel.hidden));
-  $("#new-ticket-settings").classList.toggle("active", !panel.hidden);
+function toggleSettingsMenu() {
+  const menu = $("#settings-menu");
+  menu.hidden = !menu.hidden;
+  $("#settings-toggle").setAttribute("aria-expanded", String(!menu.hidden));
+  $("#settings-toggle").classList.toggle("active", !menu.hidden);
+}
+
+function closeSettingsMenu() {
+  $("#settings-menu").hidden = true;
+  $("#settings-toggle").setAttribute("aria-expanded", "false");
+  $("#settings-toggle").classList.remove("active");
 }
 
 async function loadLLMProfiles() {
-  const sel = $("#new-ticket-profile");
+  const sel = $("#settings-profile");
   let data;
   try {
     data = await api("/api/manager/llm-profiles");
@@ -605,7 +634,7 @@ async function loadLLMProfiles() {
     console.error(`model list unavailable: ${e.message}`);
     return;
   }
-  const chosen = sel.value;
+  const chosen = state.ws?.llm_profile ?? sel.value;
   sel.innerHTML = "";
   const managers = document.createElement("option");
   managers.value = "";
@@ -622,9 +651,9 @@ async function loadLLMProfiles() {
 }
 
 function ticketSettings() {
-  const budget = parseFloat($("#new-ticket-budget").value);
+  const budget = Number(state.ws?.max_budget);
   return {
-    llm_profile: $("#new-ticket-profile").value || null,
+    llm_profile: state.ws?.llm_profile || null,
     max_budget: Number.isFinite(budget) && budget > 0 ? budget : DEFAULT_BUDGET,
   };
 }
@@ -701,9 +730,9 @@ async function verifyTicket(id) {
 
 function toggleVerified() {
   state.showVerified = !state.showVerified;
-  localStorage.setItem("vibe.showVerified", state.showVerified ? "1" : "0");
   renderVerifiedToggle();
   renderBoard();
+  patchWorkspace({ show_verified: state.showVerified });
 }
 
 function renderVerifiedToggle() {
@@ -1061,7 +1090,6 @@ function wire() {
   $("#new-ticket-body").addEventListener("keydown", ticketKeydown(submitTicket));
 
   $("#new-ticket-attach").addEventListener("click", () => $("#new-ticket-file-input").click());
-  $("#new-ticket-settings").addEventListener("click", toggleTicketSettings);
   $("#new-ticket-file-input").addEventListener("change", (e) => {
     state.newTicketFiles.push(...e.target.files);
     e.target.value = "";
@@ -1090,6 +1118,7 @@ function wire() {
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     closeAccentMenu();
+    closeSettingsMenu();
     closeManagerChat();
     closeDrawer();
   });
@@ -1100,6 +1129,21 @@ function wire() {
   });
   $$("#push-mode .seg-btn").forEach((b) =>
     b.addEventListener("click", () => patchWorkspace({ push_mode: b.dataset.mode })));
+
+  $("#settings-toggle").addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleSettingsMenu();
+  });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".control-settings")) closeSettingsMenu();
+  });
+  // "" = manager's choice; the PATCH clears the stored profile.
+  $("#settings-profile").addEventListener("change", (e) =>
+    patchWorkspace({ llm_profile: e.target.value }));
+  $("#settings-budget").addEventListener("change", (e) => {
+    const v = parseFloat(e.target.value);
+    if (v > 0) patchWorkspace({ max_budget: v });
+  });
 
   $("#show-verified").addEventListener("click", toggleVerified);
   renderVerifiedToggle();
@@ -1127,6 +1171,8 @@ function applyTheme() {
   const light = state.theme === "light";
   if (light) document.documentElement.dataset.theme = "light";
   else delete document.documentElement.dataset.theme;
+  // Paint-time hint for the next load; see the inline script in index.html.
+  localStorage.setItem("vibe.theme", state.theme);
   const btn = $("#theme-toggle");
   btn.textContent = light ? "Dark" : "Light";
   btn.title = light ? "Switch to dark mode" : "Switch to light mode";
@@ -1134,8 +1180,8 @@ function applyTheme() {
 
 function toggleTheme() {
   state.theme = state.theme === "light" ? "dark" : "light";
-  localStorage.setItem("vibe.theme", state.theme);
   applyTheme();
+  patchWorkspace({ theme: state.theme });
 }
 
 async function init() {

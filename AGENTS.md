@@ -80,9 +80,10 @@ via /etc/nginx/.htpasswd).
     `python tests/test_manager_loop_guard.py` (pure stdlib) and
     `.venv/bin/python tests/test_dispatched_count_absorbs_manager_notes.py`.
 - **"Talk to the manager" chat** (user request 2026-05-21): a `Talk to the
-  manager` button sits next to `Send request` on the new-request form and opens
-  a modal chat window backed by a conversation of its own, pre-loaded with a
-  manager skill. The skill (app.py `manager_chat_skill`, mirrored for the
+  manager` button sits in the topbar (moved there 2026-05-21, was next to
+  `Send request` on the new-request form) and opens a modal chat window backed
+  by a conversation of its own, pre-loaded with a manager skill. The skill
+  (app.py `manager_chat_skill`, mirrored for the
   extension in `src/managerchat.js`) tells the agent to (a) record every
   request the user makes in the project's `AGENTS.md` under a single top-level
   `## Manager` section — dated, in the user's words, committed so the checkout
@@ -123,9 +124,36 @@ via /etc/nginx/.htpasswd).
     instead of curling the vibe API. Keep the two skills in step otherwise.
   - Tests: `tests/test_manager_chat.py` and the "talk to the manager" cases in
     `extensions/kanban-manager/test/extension.test.js`.
-- **Request settings** (⚙ on the new-request form): the agent that runs the
-  ticket and the budget it may spend. Stored on the ticket as `llm_profile`
-  and `max_budget` (SQLite columns + the same fields in the JSON store).
+- **Workspace settings live in the filestore, never localStorage** (user
+  request 2026-05-21). Every preference the board exposes is a field on the
+  workspace record — `max_concurrent`, `push_mode`, `accent`, `theme`,
+  `show_verified`, `llm_profile`, `max_budget` — in the `workspaces` table
+  (app.py, migrations add the last four; `THEMES`/`DEFAULT_THEME` validate the
+  theme, blank `llm_profile` clears it to manager's choice) and on the
+  index.json record for the extension (`src/store.js` defaults). One PATCH
+  endpoint writes them all: `PATCH /api/workspaces/<id>` in the SPA,
+  `Store.updateWorkspace` in the extension.
+  - The UI adopts them on every board payload (`adoptWorkspacePrefs` in both
+    static/app.js and src/extension.js), so a workspace looks the same from any
+    browser and switching workspaces switches theme/verified/agent/budget.
+  - localStorage keeps only *hints*, never state: `vibe.theme` and
+    `vibe.accent` are read by index.html's head script to avoid a first-paint
+    flash, and `vibe.workspace` remembers which board to reopen. Don't add
+    preferences to it.
+  - Topbar layout (same in static/index.html and `src/markup.js`): workspace
+    picker, accent dot, Max agents, **Talk to the manager**, Show verified,
+    theme toggle (SPA only), **⚙ settings popover** (agent / budget / where
+    changes land), manager badge. The new-request form is just textarea +
+    📎 + Send.
+  - Tests: `tests/test_workspace_settings.py` (run with `.venv/bin/python`),
+    and in `extensions/kanban-manager/test/extension.test.js` the
+    "takes the theme and the verified toggle from the workspace record" and
+    "stores the agent and budget on the workspace" cases.
+- **Request settings** (⚙ in the TOPBAR since 2026-05-21, was on the
+  new-request form): the agent that runs a ticket and the budget it may spend.
+  Each ticket still records the choice (`llm_profile` / `max_budget` columns +
+  the same fields in the JSON store), but the ⚙ now edits the WORKSPACE's
+  defaults and every new ticket inherits them (see Workspace settings).
   - Defaults are **"manager's choice"** (`llm_profile` null — the manager keeps
     picking a model per task, see Model selection) and **$10**
     (`DEFAULT_TICKET_BUDGET` in app.py, `DEFAULT_BUDGET` in static/app.js and
@@ -329,9 +357,10 @@ via /etc/nginx/.htpasswd).
   `--topbar-bg`, `--btn-text` for text on solid neutral buttons) ŌĆö
   never hardcode a hex/rgba outside the two token blocks, or light mode
   breaks. The topbar `#theme-toggle` button flips the theme
-  (`applyTheme`/`toggleTheme` in app.js), persisted in localStorage
-  `vibe.theme`; an inline `<script>` in index.html's head applies the saved
-  theme before first paint to avoid a flash.
+  (`applyTheme`/`toggleTheme` in app.js), persisted as the workspace's `theme`
+  setting (see Workspace settings); localStorage `vibe.theme` is only the
+  paint-time hint an inline `<script>` in index.html's head applies before
+  first paint to avoid a flash.
   - Light palette is deliberately soft (d7a46d5, restated in the 2026-05-21
     overhaul): paper surfaces tinted with the workspace's primary rather than
     white (no pure #fff cards or fields), low-opacity shadows/glows, eased
