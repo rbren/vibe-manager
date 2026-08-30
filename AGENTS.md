@@ -849,6 +849,11 @@ Operational notes for the extension:
     second PR. Do NOT copy the repo's `canvas-extension.json` (its entrypoint
     is `dist/extension.js`; upstream's is the package root) and do NOT copy the
     repo README — upstream's is the user-facing one, written for publication.
+    `src/setup.css` is a source file too and is easy to miss behind the
+    `src/*.js` glob — copy it whenever the topbar/extension-only styles move
+    (missed once on 2026-05-21). A fresh clone has no `node_modules`, so
+    `npm install` first or `npm run check` dies on a missing `esbuild`; the
+    resulting `package-lock.json` is untracked upstream — do not commit it.
     Only `extension.test.js`/`manager.test.mjs` are published; `store.test.mjs`
     and `live.test.mjs` need a live agent server. Every new `src/` module has
     to be copied too or the bundle won't build (`managerchat.js` was new here).
