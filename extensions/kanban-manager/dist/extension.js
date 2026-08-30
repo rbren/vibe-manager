@@ -235,6 +235,13 @@ var BOARD_MARKUP = `
         <button type="button" data-mode="main" class="seg-btn">Push to main</button>
       </div>
     </div>
+    <div class="control control-accent" id="ctl-accent" hidden>
+      <button type="button" id="accent-toggle" class="ghost-btn accent-btn"
+              aria-haspopup="true" aria-expanded="false" aria-label="Primary colour">
+        <span class="accent-dot" aria-hidden="true"></span>Colour
+      </button>
+      <div class="accent-menu" id="accent-menu" role="menu" aria-label="Primary colour" hidden></div>
+    </div>
     <button id="show-verified" class="ghost-btn toggle-verified" hidden>Show verified</button>
     <div class="mgr-badge" id="mgr-badge" hidden role="button" tabindex="0"
          title="Manager automation is watching this workspace&#10;Click to run the manager now">
@@ -368,6 +375,7 @@ var BOARD_MARKUP = `
 var STORE_SUBPATH = ".openhands/vibe-manager";
 var STATUSES = ["pending", "in_progress", "needs_input", "finished"];
 var VERIFIED = "verified";
+var DEFAULT_ACCENT = "ember";
 function newId() {
   const bytes = new Uint8Array(6);
   crypto.getRandomValues(bytes);
@@ -585,6 +593,7 @@ var Store = class {
         name: path.split("/").filter(Boolean).pop() || path,
         max_concurrent: 2,
         push_mode: "main",
+        accent: DEFAULT_ACCENT,
         automation_id: null,
         manager_conversation_id: null,
         created_at: nowTs()
@@ -1116,25 +1125,45 @@ var STYLE_ELEMENT_ID = "vibe-ext-style";
 var EXTENSION_CSS = true ? `.vibe-ext { --vibe-rem: 1.2rem; }
 /* vibe \u2014 agent dispatch board.
    Design rule: hue encodes lane (pending / in progress / needs you / finished /
-   verified); controls stay neutral. One flare colour marks focus, the brand and
+   verified); controls stay neutral. The flare colour marks focus, the brand and
    drop targets. Dark is the default; light is a full token override under
    html[data-theme="light"]. Every colour below MUST be a var() token declared in
-   one of the two blocks, or light mode breaks. */
+   one of the two blocks, or light mode breaks.
+
+   The primary colour is per workspace: one of ten, written to <html> as
+   data-accent. Only --accent switches; every surface, line, text and control
+   token is a fixed neutral base washed with it through color-mix, so the whole
+   theme shifts from one declaration and both modes stay in step. Lane hues are
+   deliberately NOT accent-derived \u2014 they encode status, so they must not drift
+   into each other when the primary happens to sit on a lane's hue. */
 
 .vibe-ext {
+  /* the ten primaries (per workspace; light mode restates them darker) */
+  --accent-ember: #ff7a45;
+  --accent-amber: #ffb454;
+  --accent-citron: #cfe05f;
+  --accent-jade: #5fd08c;
+  --accent-teal: #3fd8c8;
+  --accent-azure: #5aa9ff;
+  --accent-iris: #a794ff;
+  --accent-orchid: #e58bff;
+  --accent-rose: #ff7ab0;
+  --accent-slate: #8d93b8;
+  --accent: var(--accent-ember);
+
   /* surfaces */
-  --ink: #16132c;
-  --slab: #1f1b3a;
-  --card: #292344;
-  --card-hi: #322b50;
-  --field: #1c1836;
-  --line: #3b3459;
-  --line-soft: #2e2848;
+  --ink: color-mix(in oklab, var(--accent) 14%, #040118);
+  --slab: color-mix(in oklab, var(--accent) 15%, #0b0526);
+  --card: color-mix(in oklab, var(--accent) 16%, #130b30);
+  --card-hi: color-mix(in oklab, var(--accent) 18%, #1a113b);
+  --field: color-mix(in oklab, var(--accent) 14%, #090423);
+  --line: color-mix(in oklab, var(--accent) 22%, #1d1440);
+  --line-soft: color-mix(in oklab, var(--accent) 18%, #150e32);
 
   /* text */
-  --text: #eceaf4;
-  --text-dim: #a29ec0;
-  --text-faint: #736e94;
+  --text: color-mix(in oklab, var(--accent) 8%, #f0effa);
+  --text-dim: color-mix(in oklab, var(--accent) 18%, #9c9ac2);
+  --text-faint: color-mix(in oklab, var(--accent) 22%, #605c8a);
 
   /* lanes */
   --lane-pending: #8d93b8;
@@ -1142,23 +1171,23 @@ var EXTENSION_CSS = true ? `.vibe-ext { --vibe-rem: 1.2rem; }
   --lane-input: #ffb454;
   --lane-done: #a794ff;
   --lane-verified: #5fd08c;
-  --lane-tint: rgba(255, 255, 255, .04);
+  --lane-tint: color-mix(in srgb, var(--accent) 7%, transparent);
 
   /* signals */
-  --flare: #ff7a45;
-  --flare-ring: rgba(255, 122, 69, .35);
+  --flare: var(--accent);
+  --flare-ring: color-mix(in srgb, var(--accent) 35%, transparent);
   --danger: #ff6f8b;
   --danger-line: rgba(255, 111, 139, .38);
 
   /* neutral controls */
-  --btn-bg: #eceaf4;
-  --btn-bg-hover: #ffffff;
-  --btn-text: #1b1734;
-  --ghost-bg: #272141;
-  --ghost-bg-hover: #322b50;
+  --btn-bg: color-mix(in oklab, var(--accent) 9%, #f1f0fb);
+  --btn-bg-hover: color-mix(in oklab, var(--accent) 7%, #ffffff);
+  --btn-text: color-mix(in oklab, var(--accent) 14%, #080321);
+  --ghost-bg: color-mix(in oklab, var(--accent) 18%, #0e0629);
+  --ghost-bg-hover: color-mix(in oklab, var(--accent) 20%, #170d38);
 
   /* chrome */
-  --topbar-bg: rgba(22, 19, 44, .88);
+  --topbar-bg: color-mix(in srgb, var(--ink) 88%, transparent);
   --backdrop: rgba(8, 7, 14, .62);
   --shadow-lift: 0 10px 24px -14px rgba(0, 0, 0, .85);
   --shadow-panel: 0 24px 60px -30px rgba(0, 0, 0, .9);
@@ -1178,45 +1207,70 @@ var EXTENSION_CSS = true ? `.vibe-ext { --vibe-rem: 1.2rem; }
 }
 
 .vibe-ext[data-theme="light"] {
-  /* cool paper: muted surfaces, no pure white cards, eased near-black text */
-  --ink: #eceaf1;
-  --slab: #f5f4f8;
-  --card: #faf9fc;
-  --card-hi: #f2f0f7;
-  --field: #fbfafd;
-  --line: #dcd9e6;
-  --line-soft: #e6e3ef;
+  /* cool paper: muted surfaces, no pure white cards, eased near-black text.
+     The primaries are restated darker here so they carry on paper; the mixes
+     below then land on soft off-white washes of whichever one is selected. */
+  --accent-ember: #d1552a;
+  --accent-amber: #a2701c;
+  --accent-citron: #6c7a1c;
+  --accent-jade: #2f8f5d;
+  --accent-teal: #1c8f83;
+  --accent-azure: #2069c4;
+  --accent-iris: #7059c9;
+  --accent-orchid: #9b46b8;
+  --accent-rose: #bc4576;
+  --accent-slate: #5a6187;
 
-  --text: #2c2940;
-  --text-dim: #625d7c;
-  --text-faint: #918bab;
+  --ink: color-mix(in oklab, var(--accent) 14%, #ffffff);
+  --slab: color-mix(in oklab, var(--accent) 12%, #ffffff);
+  --card: color-mix(in oklab, var(--accent) 10%, #ffffff);
+  --card-hi: color-mix(in oklab, var(--accent) 13%, #ffffff);
+  --field: color-mix(in oklab, var(--accent) 9%, #ffffff);
+  --line: color-mix(in oklab, var(--accent) 18%, #f2f2fe);
+  --line-soft: color-mix(in oklab, var(--accent) 14%, #f8f7ff);
+
+  --text: color-mix(in oklab, var(--accent) 10%, #24223a);
+  --text-dim: color-mix(in oklab, var(--accent) 16%, #5d597c);
+  --text-faint: color-mix(in oklab, var(--accent) 20%, #9692b7);
 
   --lane-pending: #767ca3;
   --lane-progress: #1c8f83;
   --lane-input: #a2701c;
   --lane-done: #7059c9;
   --lane-verified: #2f8f5d;
-  --lane-tint: rgba(44, 41, 64, .035);
+  --lane-tint: color-mix(in srgb, var(--accent) 6%, transparent);
 
-  --flare: #d1552a;
-  --flare-ring: rgba(209, 85, 42, .28);
+  --flare-ring: color-mix(in srgb, var(--accent) 28%, transparent);
   --danger: #bc4560;
   --danger-line: rgba(188, 69, 96, .32);
 
-  --btn-bg: #2c2940;
-  --btn-bg-hover: #3a3654;
-  --btn-text: #f7f6fa;
-  --ghost-bg: #ecebf2;
-  --ghost-bg-hover: #e2e0ea;
+  --btn-bg: color-mix(in oklab, var(--accent) 16%, #1f1d35);
+  --btn-bg-hover: color-mix(in oklab, var(--accent) 18%, #2d2a4b);
+  --btn-text: color-mix(in oklab, var(--accent) 8%, #ffffff);
+  --ghost-bg: color-mix(in oklab, var(--accent) 14%, #ffffff);
+  --ghost-bg-hover: color-mix(in oklab, var(--accent) 16%, #f6f7ff);
 
-  --topbar-bg: rgba(245, 244, 248, .9);
-  --backdrop: rgba(44, 41, 64, .26);
+  --topbar-bg: color-mix(in srgb, var(--slab) 90%, transparent);
+  --backdrop: color-mix(in srgb, var(--text) 26%, transparent);
   --shadow-lift: 0 10px 22px -16px rgba(44, 41, 64, .4);
   --shadow-panel: 0 24px 60px -34px rgba(44, 41, 64, .45);
   --sweep: rgba(255, 255, 255, .9);
 
   color-scheme: light;
 }
+
+/* The workspace's primary colour. Everything else is derived, so this is the
+   only thing the SPA and the extension have to switch. */
+.vibe-ext[data-accent="ember"] { --accent: var(--accent-ember); }
+.vibe-ext[data-accent="amber"] { --accent: var(--accent-amber); }
+.vibe-ext[data-accent="citron"] { --accent: var(--accent-citron); }
+.vibe-ext[data-accent="jade"] { --accent: var(--accent-jade); }
+.vibe-ext[data-accent="teal"] { --accent: var(--accent-teal); }
+.vibe-ext[data-accent="azure"] { --accent: var(--accent-azure); }
+.vibe-ext[data-accent="iris"] { --accent: var(--accent-iris); }
+.vibe-ext[data-accent="orchid"] { --accent: var(--accent-orchid); }
+.vibe-ext[data-accent="rose"] { --accent: var(--accent-rose); }
+.vibe-ext[data-accent="slate"] { --accent: var(--accent-slate); }
 
 .vibe-ext, .vibe-ext * { box-sizing: border-box; }
 .vibe-ext [hidden] { display: none !important; }
@@ -1319,6 +1373,40 @@ var EXTENSION_CSS = true ? `.vibe-ext { --vibe-rem: 1.2rem; }
 .vibe-ext .toggle-verified.active {
   color: var(--lane-verified); border-color: var(--lane-verified); background: var(--lane-tint);
 }
+
+/* ------------------------------------------------------- primary colour */
+.vibe-ext .control-accent { position: relative; }
+.vibe-ext .accent-btn { display: inline-flex; align-items: center; gap: var(--s2); }
+.vibe-ext .accent-dot {
+  width: 11px; height: 11px; border-radius: 50%; flex: none;
+  background: var(--accent); box-shadow: 0 0 0 1px var(--line);
+}
+.vibe-ext .accent-menu {
+  position: absolute; top: calc(100% + var(--s2)); right: 0; z-index: 30;
+  display: grid; grid-template-columns: repeat(5, auto); gap: var(--s2);
+  padding: var(--s3); border-radius: var(--r-md);
+  background: var(--slab); border: 1px solid var(--line);
+  box-shadow: var(--shadow-panel);
+}
+.vibe-ext .accent-swatch {
+  width: 20px; height: 20px; padding: 0; border-radius: 50%; cursor: pointer;
+  background: var(--swatch); border: 1px solid var(--line-soft);
+  transition: transform .12s;
+}
+.vibe-ext .accent-swatch:hover { transform: scale(1.15); }
+.vibe-ext .accent-swatch[aria-checked="true"] {
+  box-shadow: 0 0 0 2px var(--slab), 0 0 0 3px var(--text);
+}
+.vibe-ext .accent-swatch[data-accent="ember"] { --swatch: var(--accent-ember); }
+.vibe-ext .accent-swatch[data-accent="amber"] { --swatch: var(--accent-amber); }
+.vibe-ext .accent-swatch[data-accent="citron"] { --swatch: var(--accent-citron); }
+.vibe-ext .accent-swatch[data-accent="jade"] { --swatch: var(--accent-jade); }
+.vibe-ext .accent-swatch[data-accent="teal"] { --swatch: var(--accent-teal); }
+.vibe-ext .accent-swatch[data-accent="azure"] { --swatch: var(--accent-azure); }
+.vibe-ext .accent-swatch[data-accent="iris"] { --swatch: var(--accent-iris); }
+.vibe-ext .accent-swatch[data-accent="orchid"] { --swatch: var(--accent-orchid); }
+.vibe-ext .accent-swatch[data-accent="rose"] { --swatch: var(--accent-rose); }
+.vibe-ext .accent-swatch[data-accent="slate"] { --swatch: var(--accent-slate); }
 
 .vibe-ext .mgr-badge {
   display: flex; align-items: center; gap: var(--s2);
@@ -1851,6 +1939,18 @@ var DONE_CONV_STATUSES = /* @__PURE__ */ new Set([
   "paused",
   "deleted"
 ]);
+var ACCENTS = [
+  { id: "ember", label: "Ember" },
+  { id: "amber", label: "Amber" },
+  { id: "citron", label: "Citron" },
+  { id: "jade", label: "Jade" },
+  { id: "teal", label: "Teal" },
+  { id: "azure", label: "Azure" },
+  { id: "iris", label: "Iris" },
+  { id: "orchid", label: "Orchid" },
+  { id: "rose", label: "Rose" },
+  { id: "slate", label: "Slate" }
+];
 function workerDone(t) {
   return DONE_CONV_STATUSES.has(t.conversation_status);
 }
@@ -1927,6 +2027,7 @@ function mountBoard({ container, path, navigate, host }) {
     $("#board-wrap").hidden = true;
     $("#ctl-concurrency").hidden = true;
     $("#ctl-pushmode").hidden = true;
+    $("#ctl-accent").hidden = true;
     $("#show-verified").hidden = true;
     $("#mgr-badge").hidden = true;
     $("#mgr-stop").hidden = true;
@@ -2268,7 +2369,10 @@ ${TRIGGER_HINT}`;
     $("#board-wrap").hidden = !has;
     $("#ctl-concurrency").hidden = !has;
     $("#ctl-pushmode").hidden = !has;
+    $("#ctl-accent").hidden = !has;
     $("#show-verified").hidden = !has;
+    if (!has) closeAccentMenu();
+    applyAccent();
     renderMgrBadge();
     if (has) {
       renderBoard();
@@ -2282,6 +2386,7 @@ ${TRIGGER_HINT}`;
     $$("#push-mode .seg-btn").forEach(
       (b) => b.classList.toggle("active", b.dataset.mode === state.ws.push_mode)
     );
+    applyAccent();
     renderMgrBadge();
   }
   function modelChip(model) {
@@ -2653,6 +2758,48 @@ ${TRIGGER_HINT}`;
     if (state.theme === "light") root.dataset.theme = "light";
     else delete root.dataset.theme;
   }
+  function currentAccent() {
+    const accent = state.ws?.accent;
+    return ACCENTS.some((a) => a.id === accent) ? accent : DEFAULT_ACCENT;
+  }
+  function buildAccentMenu() {
+    const menu = $("#accent-menu");
+    for (const a of ACCENTS) {
+      const swatch = document.createElement("button");
+      swatch.type = "button";
+      swatch.className = "accent-swatch";
+      swatch.dataset.accent = a.id;
+      swatch.setAttribute("role", "menuitemradio");
+      swatch.setAttribute("aria-checked", "false");
+      swatch.setAttribute("aria-label", a.label);
+      swatch.title = a.label;
+      on(swatch, "click", () => setAccent(a.id));
+      menu.appendChild(swatch);
+    }
+  }
+  function applyAccent() {
+    const accent = currentAccent();
+    root.dataset.accent = accent;
+    const label = ACCENTS.find((a) => a.id === accent)?.label ?? accent;
+    $("#accent-toggle").title = `Primary colour: ${label}`;
+    $$("#accent-menu .accent-swatch").forEach(
+      (s) => s.setAttribute("aria-checked", String(s.dataset.accent === accent))
+    );
+  }
+  function toggleAccentMenu() {
+    const menu = $("#accent-menu");
+    menu.hidden = !menu.hidden;
+    $("#accent-toggle").setAttribute("aria-expanded", String(!menu.hidden));
+  }
+  function closeAccentMenu() {
+    $("#accent-menu").hidden = true;
+    $("#accent-toggle").setAttribute("aria-expanded", "false");
+  }
+  async function setAccent(accent) {
+    closeAccentMenu();
+    if (accent === currentAccent()) return;
+    await patchWorkspace({ accent });
+  }
   function ticketKeydown(submit) {
     return (e) => {
       if (e.key !== "Enter") return;
@@ -2689,7 +2836,9 @@ ${TRIGGER_HINT}`;
     on($("#drawer-close"), "click", closeDrawer);
     on($("#drawer-backdrop"), "click", closeDrawer);
     on(document, "keydown", (e) => {
-      if (e.key === "Escape") closeDrawer();
+      if (e.key !== "Escape") return;
+      closeAccentMenu();
+      closeDrawer();
     });
     on($("#max-concurrent"), "change", (e) => {
       const v = parseInt(e.target.value, 10);
@@ -2700,6 +2849,14 @@ ${TRIGGER_HINT}`;
     );
     on($("#show-verified"), "click", toggleVerified);
     renderVerifiedToggle();
+    buildAccentMenu();
+    on($("#accent-toggle"), "click", (e) => {
+      e.stopPropagation();
+      toggleAccentMenu();
+    });
+    on(document, "click", (e) => {
+      if (!e.target?.closest?.(".control-accent")) closeAccentMenu();
+    });
     const badgeAction = () => needsStart() ? startManager() : triggerManager();
     on($("#mgr-badge"), "click", badgeAction);
     on($("#mgr-badge"), "keydown", (e) => {
@@ -2710,6 +2867,7 @@ ${TRIGGER_HINT}`;
     });
     on($("#mgr-stop"), "click", stopManager);
     applyTheme();
+    applyAccent();
   }
   async function start() {
     await loadWorkspaces();

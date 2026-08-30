@@ -33,6 +33,22 @@ const DONE_CONV_STATUSES = new Set([
   "finished", "idle", "error", "stuck", "paused", "deleted",
 ]);
 
+// The ten primary colours a workspace can pick. Mirrors ACCENTS in app.py
+// (which validates the PATCH) and the --accent-<id> tokens in style.css.
+const ACCENTS = [
+  { id: "ember", label: "Ember" },
+  { id: "amber", label: "Amber" },
+  { id: "citron", label: "Citron" },
+  { id: "jade", label: "Jade" },
+  { id: "teal", label: "Teal" },
+  { id: "azure", label: "Azure" },
+  { id: "iris", label: "Iris" },
+  { id: "orchid", label: "Orchid" },
+  { id: "rose", label: "Rose" },
+  { id: "slate", label: "Slate" },
+];
+const DEFAULT_ACCENT = "ember";
+
 // An empty lane is an invitation to act, not a blank box.
 const LANE_EMPTY = {
   pending: "Nothing queued. Send a request above.",
@@ -325,7 +341,10 @@ function render() {
   $("#board-wrap").hidden = !has;
   $("#ctl-concurrency").hidden = !has;
   $("#ctl-pushmode").hidden = !has;
+  $("#ctl-accent").hidden = !has;
   $("#show-verified").hidden = !has;
+  if (!has) closeAccentMenu();
+  applyAccent();
   renderMgrBadge();
   if (has) { renderBoard(); renderSettings(); }
 }
@@ -336,6 +355,7 @@ function renderSettings() {
   if (document.activeElement !== mc) mc.value = state.ws.max_concurrent;
   $$("#push-mode .seg-btn").forEach((b) =>
     b.classList.toggle("active", b.dataset.mode === state.ws.push_mode));
+  applyAccent();
   renderMgrBadge();
 }
 
@@ -761,6 +781,61 @@ async function patchWorkspace(patch) {
   }
 }
 
+/* --------------------------------------------------------- primary colour */
+
+/* The workspace's primary colour drives the whole palette: style.css derives
+   every surface, line and control token from --accent, so switching the
+   data-accent attribute repaints the board in both light and dark mode. */
+
+function currentAccent() {
+  const accent = state.ws?.accent;
+  return ACCENTS.some((a) => a.id === accent) ? accent : DEFAULT_ACCENT;
+}
+
+function buildAccentMenu() {
+  const menu = $("#accent-menu");
+  for (const a of ACCENTS) {
+    const swatch = document.createElement("button");
+    swatch.type = "button";
+    swatch.className = "accent-swatch";
+    swatch.dataset.accent = a.id;
+    swatch.setAttribute("role", "menuitemradio");
+    swatch.setAttribute("aria-checked", "false");
+    swatch.setAttribute("aria-label", a.label);
+    swatch.title = a.label;
+    swatch.addEventListener("click", () => setAccent(a.id));
+    menu.appendChild(swatch);
+  }
+}
+
+function applyAccent() {
+  const accent = currentAccent();
+  document.documentElement.dataset.accent = accent;
+  // Paint-time hint for the next load; see the inline script in index.html.
+  localStorage.setItem("vibe.accent", accent);
+  const label = ACCENTS.find((a) => a.id === accent)?.label ?? accent;
+  $("#accent-toggle").title = `Primary colour: ${label}`;
+  $$("#accent-menu .accent-swatch").forEach((s) =>
+    s.setAttribute("aria-checked", String(s.dataset.accent === accent)));
+}
+
+function toggleAccentMenu() {
+  const menu = $("#accent-menu");
+  menu.hidden = !menu.hidden;
+  $("#accent-toggle").setAttribute("aria-expanded", String(!menu.hidden));
+}
+
+function closeAccentMenu() {
+  $("#accent-menu").hidden = true;
+  $("#accent-toggle").setAttribute("aria-expanded", "false");
+}
+
+async function setAccent(accent) {
+  closeAccentMenu();
+  if (accent === currentAccent()) return;
+  await patchWorkspace({ accent });
+}
+
 /* ------------------------------------------------------------------ init */
 
 function ticketKeydown(submit) {
@@ -798,7 +873,11 @@ function wire() {
 
   $("#drawer-close").addEventListener("click", closeDrawer);
   $("#drawer-backdrop").addEventListener("click", closeDrawer);
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    closeAccentMenu();
+    closeDrawer();
+  });
 
   $("#max-concurrent").addEventListener("change", (e) => {
     const v = parseInt(e.target.value, 10);
@@ -809,6 +888,15 @@ function wire() {
 
   $("#show-verified").addEventListener("click", toggleVerified);
   renderVerifiedToggle();
+
+  buildAccentMenu();
+  $("#accent-toggle").addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleAccentMenu();
+  });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".control-accent")) closeAccentMenu();
+  });
 
   $("#theme-toggle").addEventListener("click", toggleTheme);
   $("#mgr-badge").addEventListener("click", triggerManager);

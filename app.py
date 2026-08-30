@@ -51,6 +51,15 @@ STATUSES = ["pending", "in_progress", "needs_input", "finished"]
 # Terminal state outside the main board; reached only via the verify endpoint.
 VERIFIED = "verified"
 
+# Primary colour of a workspace's theme. The names index the --accent-<name>
+# tokens in static/style.css; the same list is mirrored in the SPA and the
+# Canvas extension so the picker and the validation cannot drift apart.
+ACCENTS = [
+    "ember", "amber", "citron", "jade", "teal",
+    "azure", "iris", "orchid", "rose", "slate",
+]
+DEFAULT_ACCENT = "ember"
+
 app = FastAPI(title="Vibe Work Manager")
 
 # The Canvas Extension build of the SPA (extensions/kanban-manager) runs on the
@@ -102,6 +111,7 @@ def init_db() -> None:
                 name TEXT NOT NULL,
                 max_concurrent INTEGER NOT NULL DEFAULT 3,
                 push_mode TEXT NOT NULL DEFAULT 'pr',
+                accent TEXT NOT NULL DEFAULT 'ember',
                 automation_id TEXT,
                 created_at REAL NOT NULL
             );
@@ -138,6 +148,11 @@ def init_db() -> None:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(workspaces)")}
         if "manager_conversation_id" not in cols:
             conn.execute("ALTER TABLE workspaces ADD COLUMN manager_conversation_id TEXT")
+        if "accent" not in cols:
+            conn.execute(
+                "ALTER TABLE workspaces ADD COLUMN accent TEXT NOT NULL "
+                f"DEFAULT '{DEFAULT_ACCENT}'"
+            )
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(tickets)")}
         if "verified_at" not in cols:
             conn.execute("ALTER TABLE tickets ADD COLUMN verified_at REAL")
@@ -428,6 +443,7 @@ class SelectWorkspace(BaseModel):
 class WorkspaceSettings(BaseModel):
     max_concurrent: int | None = None
     push_mode: str | None = None  # 'pr' | 'main'
+    accent: str | None = None  # one of ACCENTS
 
 
 class NewTicket(BaseModel):
@@ -619,6 +635,10 @@ def update_workspace(ws_id: str, req: WorkspaceSettings):
             if req.push_mode not in ("pr", "main"):
                 raise HTTPException(400, "push_mode must be 'pr' or 'main'")
             conn.execute("UPDATE workspaces SET push_mode=? WHERE id=?", (req.push_mode, ws_id))
+        if req.accent is not None:
+            if req.accent not in ACCENTS:
+                raise HTTPException(400, f"accent must be one of: {', '.join(ACCENTS)}")
+            conn.execute("UPDATE workspaces SET accent=? WHERE id=?", (req.accent, ws_id))
         conn.commit()
         return workspace_dict(conn.execute("SELECT * FROM workspaces WHERE id=?", (ws_id,)).fetchone())
 

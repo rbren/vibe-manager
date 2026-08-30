@@ -34,7 +34,7 @@ Concurrency.
   "version": 1,
   "workspaces": [
     {"id": "...", "path": "/root/git/foo", "name": "foo",
-     "max_concurrent": 2, "push_mode": "main",
+     "max_concurrent": 2, "push_mode": "main", "accent": "ember",
      "automation_id": "...", "manager_conversation_id": "...",
      "created_at": "..."}
   ]

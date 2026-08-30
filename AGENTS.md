@@ -18,7 +18,8 @@ via /etc/nginx/.htpasswd).
 - `app.py` ├óŌé¼ŌĆØ FastAPI backend on 127.0.0.1:18300 (systemd: `vibe-manager.service`).
   SQLite at `./vibe.db`. Serves the SPA from `static/` under `/assets`.
   - Public API (`/api/...`): workspace picker, settings (max_concurrent,
-    push_mode pr|main), ticket CRUD (append-only entries), priority reorder.
+    push_mode pr|main, accent = the workspace's primary colour), ticket CRUD
+    (append-only entries), priority reorder.
   - Workspace picker (`GET /api/workspaces`): `available` = children of the
     agent-server workspace parents (e.g. /root/git/*) + agent-server-
     registered workspaces; `selected` = already-onboarded ones from vibe.db.
@@ -228,8 +229,9 @@ via /etc/nginx/.htpasswd).
   the inherited `--lane` custom property set on `.col[data-status=...]`, so a
   card's left rail, the column's top rail and its count all share one hue.
   Primary buttons are neutral chalk-on-ink (`--btn-bg`/`--btn-text`), and the
-  single `--flare` (orange) is reserved for focus rings, the brand mark and
-  drag drop indicators. Signature element: `.card.live` (added by app.js when
+  single `--flare` (the workspace's primary colour, orange by default) is
+  reserved for focus rings, the brand mark and drag drop indicators.
+  Signature element: `.card.live` (added by app.js when
   an in_progress ticket has a `latest_action`) animates a light travelling
   down the lane rail while the telemetry line types out with a caret.
   Type: Archivo (variable `wdth` axis, used expanded + uppercase for lane
@@ -264,6 +266,37 @@ via /etc/nginx/.htpasswd).
     low-opacity shadows/glows, eased near-black text, desaturated lane
     colours. Keep new light-mode tokens muted to match — "less jarring" is a
     user requirement.
+- **Primary colour per workspace (2026-05-21)**: each workspace picks one of
+  exactly TEN primaries — ember, amber, citron, jade, teal, azure, iris,
+  orchid, rose, slate — and the whole theme shifts with it, in both modes.
+  - How it works: `:root` declares `--accent-<name>` for all ten plus
+    `--accent` (default ember), and EVERY surface/line/text/control token is
+    `color-mix(in oklab, var(--accent) N%, <neutral base>)`. The only thing a
+    palette switch changes is one declaration —
+    `html[data-accent="<name>"] { --accent: var(--accent-<name>); }` — and the
+    light block restates the ten primaries darker, so one attribute repaints
+    both modes. The neutral bases were solved so the *average* accent lands on
+    the pre-existing palette; don't hand-edit one mix without re-deriving.
+    Lanes (`--lane-*`) are deliberately NOT accent-derived: hue encodes status
+    and must not collide with the primary. `--flare` IS the accent (it used to
+    be a fixed orange; ember reproduces it).
+  - Storage is per workspace, next to the other workspace settings:
+    `workspaces.accent` in vibe.db (migration adds the column, default
+    `ember`, PATCH `/api/workspaces/<id>` validates against `ACCENTS` in
+    app.py → 400) and the `accent` field on the index.json workspace record
+    for the Canvas extension (`DEFAULT_ACCENT` in `src/store.js`).
+  - UI: a topbar `.control-accent` popover (`#accent-toggle` + `#accent-menu`,
+    ten `.accent-swatch` buttons, role=menuitemradio, Escape/outside click
+    closes) in BOTH static/index.html and the extension's `src/markup.js`.
+    `applyAccent()` writes `data-accent` — on `<html>` in the SPA, on the
+    `.vibe-ext` root in the extension (same scoping rule as the theme). The
+    SPA also mirrors the choice into localStorage `vibe.accent` purely as a
+    paint-time hint for the head script.
+  - The ten names live in three places that must stay in step: `ACCENTS` in
+    app.py (validation), `ACCENTS` in static/app.js and extension.js (the
+    picker), and the `--accent-<name>` tokens + `.accent-swatch[data-accent]`
+    rules in style.css. Tests: `tests/test_workspace_accent.py` and the two
+    primary-colour cases in `extensions/kanban-manager/test/extension.test.js`.
 - `static/` ├óŌé¼ŌĆØ vanilla JS SPA (no build step). Kanban columns: pending,
   in_progress, needs_input, finished. Drag vertically to reprioritize; click
   a card for the append-only drawer; each card links to its conversation.

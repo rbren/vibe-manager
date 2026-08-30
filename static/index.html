@@ -10,9 +10,14 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..700&family=Public+Sans:wght@400;500;600&family=Azeret+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/assets/style.css">
 <script>
-  // Apply the saved theme before first paint to avoid a dark→light flash.
+  // Apply the saved theme and the last workspace's primary colour before first
+  // paint to avoid a dark→light / colour→colour flash. Both are re-applied from
+  // the real state once the board loads; an unknown accent just falls back to
+  // the default palette.
   if (localStorage.getItem("vibe.theme") === "light")
     document.documentElement.dataset.theme = "light";
+  var vibeAccent = localStorage.getItem("vibe.accent");
+  if (vibeAccent) document.documentElement.dataset.accent = vibeAccent;
 </script>
 </head>
 <body>
@@ -38,6 +43,13 @@
         <button type="button" data-mode="pr" class="seg-btn">Pull request</button>
         <button type="button" data-mode="main" class="seg-btn">Push to main</button>
       </div>
+    </div>
+    <div class="control control-accent" id="ctl-accent" hidden>
+      <button type="button" id="accent-toggle" class="ghost-btn accent-btn"
+              aria-haspopup="true" aria-expanded="false" aria-label="Primary colour">
+        <span class="accent-dot" aria-hidden="true"></span>Colour
+      </button>
+      <div class="accent-menu" id="accent-menu" role="menu" aria-label="Primary colour" hidden></div>
     </div>
     <button id="show-verified" class="ghost-btn toggle-verified" hidden>Show verified</button>
     <button id="theme-toggle" class="ghost-btn theme-toggle" title="Switch to light mode" aria-label="Switch colour theme">Light</button>

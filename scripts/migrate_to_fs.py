@@ -120,6 +120,8 @@ def migrate(db_path: Path, root: Path, src_attachments: Path, dry_run: bool) -> 
             if "manager_conversation_id" in ws_available
             else None
         )
+        # Added by a later migration; databases without it get the default theme.
+        entry["accent"] = ws["accent"] if "accent" in ws_available else "ember"
         workspaces.append(entry)
 
         tickets = [

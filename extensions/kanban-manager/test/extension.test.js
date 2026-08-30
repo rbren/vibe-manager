@@ -363,6 +363,81 @@ describe("mount", () => {
     dispose();
   });
 
+  /* The primary colour is a per-workspace field on index.json, and the theme
+     is derived from it in CSS — so the whole feature is "the root carries the
+     workspace's accent, and picking one writes it back". */
+  it("themes the board with the workspace's primary colour", async () => {
+    dom.store.clear();
+    const home = "/home/tester";
+    const root = `${home}/.openhands/vibe-manager`;
+    const indexPath = `${root}/index.json`;
+    const workspace = {
+      id: "w1",
+      name: "demo",
+      path: "/git/demo",
+      max_concurrent: 2,
+      accent: "teal",
+    };
+    const { host, disk } = hostWithStore({
+      home,
+      files: {
+        [indexPath]: { workspaces: [workspace] },
+        [`${root}/workspaces/w1/board.json`]: { tickets: [] },
+      },
+    });
+
+    const container = makeContainer();
+    const dispose = mountBoard({ container, path: "demo", navigate: () => {}, host });
+    const extRoot = container.querySelector(".vibe-ext");
+
+    await waitFor(() => extRoot.getAttribute("data-accent") === "teal");
+    assert.equal(
+      container.querySelectorAll(".accent-swatch").length,
+      10,
+      "ten primaries to choose from",
+    );
+    assert.equal(
+      container
+        .querySelector('.accent-swatch[data-accent="teal"]')
+        .getAttribute("aria-checked"),
+      "true",
+    );
+    assert.equal(
+      dom.document.documentElement.getAttribute("data-accent"),
+      null,
+      "host <html> untouched",
+    );
+
+    container.querySelector('.accent-swatch[data-accent="rose"]').dispatchEvent(
+      new dom.window.Event("click", { bubbles: true }),
+    );
+    await waitFor(() => disk.get(indexPath)?.workspaces[0].accent === "rose");
+    await waitFor(() => extRoot.getAttribute("data-accent") === "rose");
+    dispose();
+  });
+
+  it("falls back to the default primary for a workspace without one", async () => {
+    dom.store.clear();
+    const home = "/home/tester";
+    const root = `${home}/.openhands/vibe-manager`;
+    const { host } = hostWithStore({
+      home,
+      files: {
+        [`${root}/index.json`]: {
+          workspaces: [{ id: "w1", name: "demo", path: "/git/demo", max_concurrent: 2 }],
+        },
+        [`${root}/workspaces/w1/board.json`]: { tickets: [] },
+      },
+    });
+
+    const container = makeContainer();
+    const dispose = mountBoard({ container, path: "demo", navigate: () => {}, host });
+    await waitFor(
+      () => container.querySelector(".vibe-ext").getAttribute("data-accent") === "ember",
+    );
+    dispose();
+  });
+
   it("treats the route remainder as the workspace name", async () => {
     dom.store.clear();
     const home = "/home/tester";

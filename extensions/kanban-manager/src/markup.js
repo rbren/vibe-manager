@@ -33,6 +33,13 @@ export const BOARD_MARKUP = `
         <button type="button" data-mode="main" class="seg-btn">Push to main</button>
       </div>
     </div>
+    <div class="control control-accent" id="ctl-accent" hidden>
+      <button type="button" id="accent-toggle" class="ghost-btn accent-btn"
+              aria-haspopup="true" aria-expanded="false" aria-label="Primary colour">
+        <span class="accent-dot" aria-hidden="true"></span>Colour
+      </button>
+      <div class="accent-menu" id="accent-menu" role="menu" aria-label="Primary colour" hidden></div>
+    </div>
     <button id="show-verified" class="ghost-btn toggle-verified" hidden>Show verified</button>
     <div class="mgr-badge" id="mgr-badge" hidden role="button" tabindex="0"
          title="Manager automation is watching this workspace&#10;Click to run the manager now">

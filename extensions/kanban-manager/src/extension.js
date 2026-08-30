@@ -17,7 +17,7 @@
 */
 
 import { BOARD_MARKUP } from "./markup.js";
-import { Store } from "./store.js";
+import { Store, DEFAULT_ACCENT } from "./store.js";
 import { Live } from "./live.js";
 import { Manager } from "./manager.js";
 
@@ -113,6 +113,22 @@ function shortModel(model) {
 const DONE_CONV_STATUSES = new Set([
   "finished", "idle", "error", "stuck", "paused", "deleted",
 ]);
+
+// The ten primary colours a workspace can pick, mirroring the SPA's ACCENTS in
+// static/app.js and the --accent-<id> tokens in static/style.css (which the
+// bundle builds from).
+const ACCENTS = [
+  { id: "ember", label: "Ember" },
+  { id: "amber", label: "Amber" },
+  { id: "citron", label: "Citron" },
+  { id: "jade", label: "Jade" },
+  { id: "teal", label: "Teal" },
+  { id: "azure", label: "Azure" },
+  { id: "iris", label: "Iris" },
+  { id: "orchid", label: "Orchid" },
+  { id: "rose", label: "Rose" },
+  { id: "slate", label: "Slate" },
+];
 
 function workerDone(t) {
   return DONE_CONV_STATUSES.has(t.conversation_status);
@@ -216,6 +232,7 @@ export function mountBoard({ container, path, navigate, host }) {
     $("#board-wrap").hidden = true;
     $("#ctl-concurrency").hidden = true;
     $("#ctl-pushmode").hidden = true;
+    $("#ctl-accent").hidden = true;
     $("#show-verified").hidden = true;
     $("#mgr-badge").hidden = true;
     $("#mgr-stop").hidden = true;
@@ -622,7 +639,10 @@ export function mountBoard({ container, path, navigate, host }) {
     $("#board-wrap").hidden = !has;
     $("#ctl-concurrency").hidden = !has;
     $("#ctl-pushmode").hidden = !has;
+    $("#ctl-accent").hidden = !has;
     $("#show-verified").hidden = !has;
+    if (!has) closeAccentMenu();
+    applyAccent();
     renderMgrBadge();
     if (has) {
       renderBoard();
@@ -637,6 +657,7 @@ export function mountBoard({ container, path, navigate, host }) {
     $$("#push-mode .seg-btn").forEach((b) =>
       b.classList.toggle("active", b.dataset.mode === state.ws.push_mode),
     );
+    applyAccent();
     renderMgrBadge();
   }
 
@@ -1061,6 +1082,61 @@ export function mountBoard({ container, path, navigate, host }) {
     else delete root.dataset.theme;
   }
 
+  /* ------------------------------------------------------- primary colour */
+
+  /* The workspace's primary colour, stored on its index.json record. The
+     stylesheet derives every surface, line and control token from --accent, so
+     one attribute repaints the board in whichever mode is active. Scoped to
+     our own root for the same reason the theme is. */
+
+  function currentAccent() {
+    const accent = state.ws?.accent;
+    return ACCENTS.some((a) => a.id === accent) ? accent : DEFAULT_ACCENT;
+  }
+
+  function buildAccentMenu() {
+    const menu = $("#accent-menu");
+    for (const a of ACCENTS) {
+      const swatch = document.createElement("button");
+      swatch.type = "button";
+      swatch.className = "accent-swatch";
+      swatch.dataset.accent = a.id;
+      swatch.setAttribute("role", "menuitemradio");
+      swatch.setAttribute("aria-checked", "false");
+      swatch.setAttribute("aria-label", a.label);
+      swatch.title = a.label;
+      on(swatch, "click", () => setAccent(a.id));
+      menu.appendChild(swatch);
+    }
+  }
+
+  function applyAccent() {
+    const accent = currentAccent();
+    root.dataset.accent = accent;
+    const label = ACCENTS.find((a) => a.id === accent)?.label ?? accent;
+    $("#accent-toggle").title = `Primary colour: ${label}`;
+    $$("#accent-menu .accent-swatch").forEach((s) =>
+      s.setAttribute("aria-checked", String(s.dataset.accent === accent)),
+    );
+  }
+
+  function toggleAccentMenu() {
+    const menu = $("#accent-menu");
+    menu.hidden = !menu.hidden;
+    $("#accent-toggle").setAttribute("aria-expanded", String(!menu.hidden));
+  }
+
+  function closeAccentMenu() {
+    $("#accent-menu").hidden = true;
+    $("#accent-toggle").setAttribute("aria-expanded", "false");
+  }
+
+  async function setAccent(accent) {
+    closeAccentMenu();
+    if (accent === currentAccent()) return;
+    await patchWorkspace({ accent });
+  }
+
   /* ---------------------------------------------------------------- wire */
 
   function ticketKeydown(submit) {
@@ -1108,7 +1184,9 @@ export function mountBoard({ container, path, navigate, host }) {
     on($("#drawer-backdrop"), "click", closeDrawer);
     // Document-level so Escape works wherever focus is - removed on dispose.
     on(document, "keydown", (e) => {
-      if (e.key === "Escape") closeDrawer();
+      if (e.key !== "Escape") return;
+      closeAccentMenu();
+      closeDrawer();
     });
 
     on($("#max-concurrent"), "change", (e) => {
@@ -1122,6 +1200,15 @@ export function mountBoard({ container, path, navigate, host }) {
     on($("#show-verified"), "click", toggleVerified);
     renderVerifiedToggle();
 
+    buildAccentMenu();
+    on($("#accent-toggle"), "click", (e) => {
+      e.stopPropagation();
+      toggleAccentMenu();
+    });
+    on(document, "click", (e) => {
+      if (!e.target?.closest?.(".control-accent")) closeAccentMenu();
+    });
+
     // One control, two jobs: start the manager when there isn't one, run it
     // now when there is.
     const badgeAction = () => (needsStart() ? startManager() : triggerManager());
@@ -1134,6 +1221,7 @@ export function mountBoard({ container, path, navigate, host }) {
     });
     on($("#mgr-stop"), "click", stopManager);
     applyTheme();
+    applyAccent();
   }
 
   /* ---------------------------------------------------------------- boot */

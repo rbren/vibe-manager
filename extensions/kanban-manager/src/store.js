@@ -24,6 +24,11 @@ export const STORE_SUBPATH = ".openhands/vibe-manager";
 export const STATUSES = ["pending", "in_progress", "needs_input", "finished"];
 export const VERIFIED = "verified";
 
+/* Primary colour of a workspace's theme, stored on its index.json record. The
+   palette lives in the stylesheet (--accent-<id>); this is only the fallback
+   for records written before the field existed. */
+export const DEFAULT_ACCENT = "ember";
+
 export function newId() {
   const bytes = new Uint8Array(6);
   crypto.getRandomValues(bytes);
@@ -301,6 +306,7 @@ export class Store {
         name: path.split("/").filter(Boolean).pop() || path,
         max_concurrent: 2,
         push_mode: "main",
+        accent: DEFAULT_ACCENT,
         automation_id: null,
         manager_conversation_id: null,
         created_at: nowTs(),
