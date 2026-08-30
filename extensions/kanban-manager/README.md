@@ -11,7 +11,8 @@ Formerly `vibe-board`.
 
 Canvas Extensions are **frontend only** — there is no hook for extension-owned
 server code. So the board keeps its state as JSON on the agent server's disk
-(`~/.openhands/vibe-manager/index.json` plus `workspaces/<id>/board.json`),
+(`~/.openhands/vibe-manager/index.json` plus one
+`workspaces/<id>/tickets/<tid>/ticket.json` per ticket),
 read and written through the agent server's file API. There is no second
 service to run and nothing to configure: the extension uses the backend Canvas
 is already connected to.

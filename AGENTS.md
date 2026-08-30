@@ -692,6 +692,27 @@ Operational notes for the extension:
   per-workspace manager CLI copy — it is written at install time and does NOT
   follow the repo. Skipping (3) leaves `vibectl snapshot` crashing on the new
   layout while the automation itself succeeds.
+  - Full deploy of a store/automation change, in order (2026-08-30): push to
+    origin/master → in `/root/git/vibe-manager` `git pull --ff-only` (or reset
+    to origin/master once its content is verified contained) and
+    `systemctl restart vibe-manager.service`, check `/api/health` → `python3
+    scripts/push_automation.py` → `cp automation/vibe{store,ctl}.py` over every
+    `<store>/bin/<ws_id>/` (and the legacy shared `<store>/bin/` pair) →
+    reinstall the extension. Verify the store end-to-end with
+    `python3 <store>/bin/<ws_id>/vibectl.py snapshot`, which reads the LIVE
+    board through the deployed CLI.
+  - `tests/test_request_settings.py` calls `install_cli` without redirecting
+    the store, so it writes a stray `<store>/bin/<random_id>/` (workspace path
+    under /tmp) into the REAL store; one was removed 2026-08-30. Harmless but
+    delete it, like the `cache-*` workspaces.
+  - Installs land **disabled**, including a `force` reinstall, so an install
+    never silently swaps the board out from under the user — after deploying,
+    tell them to enable it in Customize → Extensions. The old `vibe-board`
+    install (still enabled, still reading `board.json`) was uninstalled with
+    `DELETE /api/canvas-extensions/installed/vibe-board` on 2026-08-30.
+  - The GitHub token for upstream pushes comes from
+    `GET /api/settings/secrets/GITHUB_PERSONAL_ACCESS_TOKEN` on the agent
+    server (session key header) and is returned as **plain text**, not JSON.
 - `static/style.css` stays the single source of truth. `build.mjs` scopes every
   selector under `.vibe-ext` and rewrites `html`/`:root`/`body` and
   `html[data-theme="light"]` onto that root, so the extension can't restyle
@@ -739,6 +760,19 @@ Operational notes for the extension:
   copy plus `entrypoint: "extension.js"` and a package.json, with no code
   edits. Re-publish by copying `src/`, `test/`, `build.mjs` and the manifest
   again; `npm run check` there rebuilds and reruns the suite.
+  - Concretely (done 2026-08-30): clone `rbren/canvas-extensions`, check out
+    the PR branch `rename-to-kanban-manager` (PR
+    DevinVinson/canvas-extensions#2), then copy
+    `extensions/kanban-manager/src/*.js` → `kanban-manager/src/`,
+    `static/style.css` → `src/board.css`, `automation/{main,vibestore,
+    vibectl}.py` → `src/automation/`, `test/{extension.test.js,
+    manager.test.mjs}` and `build.mjs`. Push to that branch — never open a
+    second PR. Do NOT copy the repo's `canvas-extension.json` (its entrypoint
+    is `dist/extension.js`; upstream's is the package root) and do NOT copy the
+    repo README — upstream's is the user-facing one, written for publication.
+    Only `extension.test.js`/`manager.test.mjs` are published; `store.test.mjs`
+    and `live.test.mjs` need a live agent server. Every new `src/` module has
+    to be copied too or the bundle won't build (`managerchat.js` was new here).
 
 ## Canvas Extensions research (2026-05-21)
 
