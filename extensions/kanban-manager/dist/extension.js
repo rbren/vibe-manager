@@ -2366,7 +2366,8 @@ function mountBoard({ container, path, navigate, host }) {
   };
   function readTheme() {
     try {
-      return localStorage.getItem("vibe.theme") === "light" ? "light" : "dark";
+      const hint = localStorage.getItem("vibe.theme.hint") ?? localStorage.getItem("vibe.theme");
+      return hint === "light" ? "light" : "dark";
     } catch {
       return "dark";
     }
@@ -2764,8 +2765,8 @@ ${TRIGGER_HINT}`;
   }
   function adoptWorkspacePrefs() {
     if (!state.ws) return;
-    state.theme = state.ws.theme === "light" ? "light" : "dark";
     state.showVerified = !!state.ws.show_verified;
+    if (state.ws.theme) state.theme = state.ws.theme === "light" ? "light" : "dark";
   }
   function modelChip(model) {
     const chip = document.createElement("span");

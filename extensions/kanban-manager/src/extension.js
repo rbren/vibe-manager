@@ -210,7 +210,9 @@ export function mountBoard({ container, path, navigate, host }) {
 
   function readTheme() {
     try {
-      return localStorage.getItem("vibe.theme") === "light" ? "light" : "dark";
+      const hint = localStorage.getItem("vibe.theme.hint")
+        ?? localStorage.getItem("vibe.theme");
+      return hint === "light" ? "light" : "dark";
     } catch {
       return "dark";
     }
@@ -688,8 +690,10 @@ export function mountBoard({ container, path, navigate, host }) {
      them whenever it arrives. */
   function adoptWorkspacePrefs() {
     if (!state.ws) return;
-    state.theme = state.ws.theme === "light" ? "light" : "dark";
     state.showVerified = !!state.ws.show_verified;
+    // A record written before the theme moved into the store has no theme of
+    // its own; leave the browser's last one alone rather than resetting it.
+    if (state.ws.theme) state.theme = state.ws.theme === "light" ? "light" : "dark";
   }
 
   function modelChip(model) {

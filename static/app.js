@@ -4,6 +4,17 @@
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
 
+/* The theme is a workspace setting; localStorage only mirrors it so the head
+   script can paint before the board loads. A leftover `vibe.theme` predates
+   the move and is handed to the first workspace that opens, then dropped. */
+const THEME_HINT_KEY = "vibe.theme.hint";
+const LEGACY_THEME_KEY = "vibe.theme";
+let legacyTheme = localStorage.getItem(LEGACY_THEME_KEY);
+
+function themeHint() {
+  return localStorage.getItem(THEME_HINT_KEY) ?? localStorage.getItem(LEGACY_THEME_KEY);
+}
+
 const state = {
   workspaces: { available: [], selected: [] },
   ws: null,              // selected workspace object
@@ -18,7 +29,7 @@ const state = {
   // the theme falls back to the paint-time hint the head script reads.
   showVerified: false,
   newTicketFiles: [],    // File objects staged for the next ticket
-  theme: localStorage.getItem("vibe.theme") === "light" ? "light" : "dark",
+  theme: themeHint() === "light" ? "light" : "dark",
   chat: null,            // manager chat: {wsId, conversationId, url, messages, cursor, status, action}
   chatTimer: null,
   chatOpen: false,
@@ -387,8 +398,18 @@ function renderSettings() {
    whenever a workspace's record arrives. */
 function adoptWorkspacePrefs() {
   if (!state.ws) return;
-  state.theme = state.ws.theme === "light" ? "light" : "dark";
   state.showVerified = !!state.ws.show_verified;
+  const legacy = legacyTheme;
+  legacyTheme = null;
+  if (legacy && legacy !== state.ws.theme) {
+    // A preference from when the theme was browser state: keep what the user
+    // was looking at and hand it to the workspace, once.
+    state.theme = legacy === "light" ? "light" : "dark";
+    localStorage.removeItem(LEGACY_THEME_KEY);
+    patchWorkspace({ theme: state.theme });
+    return;
+  }
+  state.theme = state.ws.theme === "light" ? "light" : "dark";
 }
 
 function shortModel(model) {
@@ -1172,7 +1193,7 @@ function applyTheme() {
   if (light) document.documentElement.dataset.theme = "light";
   else delete document.documentElement.dataset.theme;
   // Paint-time hint for the next load; see the inline script in index.html.
-  localStorage.setItem("vibe.theme", state.theme);
+  localStorage.setItem(THEME_HINT_KEY, state.theme);
   const btn = $("#theme-toggle");
   btn.textContent = light ? "Dark" : "Light";
   btn.title = light ? "Switch to dark mode" : "Switch to light mode";

@@ -14,8 +14,9 @@
   // settings on the server, mirrored here so the first paint doesn't flash
   // dark→light / colour→colour. Both are re-applied from the workspace once
   // the board loads; an unknown accent falls back to the default palette.
-  if (localStorage.getItem("vibe.theme") === "light")
-    document.documentElement.dataset.theme = "light";
+  var vibeTheme = localStorage.getItem("vibe.theme.hint")
+    ?? localStorage.getItem("vibe.theme");
+  if (vibeTheme === "light") document.documentElement.dataset.theme = "light";
   var vibeAccent = localStorage.getItem("vibe.accent");
   if (vibeAccent) document.documentElement.dataset.accent = vibeAccent;
 </script>

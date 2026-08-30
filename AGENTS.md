@@ -136,10 +136,12 @@ via /etc/nginx/.htpasswd).
   - The UI adopts them on every board payload (`adoptWorkspacePrefs` in both
     static/app.js and src/extension.js), so a workspace looks the same from any
     browser and switching workspaces switches theme/verified/agent/budget.
-  - localStorage keeps only *hints*, never state: `vibe.theme` and
+  - localStorage keeps only *hints*, never state: `vibe.theme.hint` and
     `vibe.accent` are read by index.html's head script to avoid a first-paint
     flash, and `vibe.workspace` remembers which board to reopen. Don't add
-    preferences to it.
+    preferences to it. A leftover `vibe.theme` (the key from before the move)
+    is handed to the first workspace that opens and then deleted, so an
+    existing light-mode browser doesn't snap back to dark.
   - Topbar layout (same in static/index.html and `src/markup.js`): workspace
     picker, accent dot, Max agents, **Talk to the manager**, Show verified,
     theme toggle (SPA only), **⚙ settings popover** (agent / budget / where
@@ -358,8 +360,8 @@ via /etc/nginx/.htpasswd).
   never hardcode a hex/rgba outside the two token blocks, or light mode
   breaks. The topbar `#theme-toggle` button flips the theme
   (`applyTheme`/`toggleTheme` in app.js), persisted as the workspace's `theme`
-  setting (see Workspace settings); localStorage `vibe.theme` is only the
-  paint-time hint an inline `<script>` in index.html's head applies before
+  setting (see Workspace settings); localStorage `vibe.theme.hint` is only the
+  paint-time mirror an inline `<script>` in index.html's head applies before
   first paint to avoid a flash.
   - Light palette is deliberately soft (d7a46d5, restated in the 2026-05-21
     overhaul): paper surfaces tinted with the workspace's primary rather than
