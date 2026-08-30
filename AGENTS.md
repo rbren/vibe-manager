@@ -143,10 +143,17 @@ via /etc/nginx/.htpasswd).
     is handed to the first workspace that opens and then deleted, so an
     existing light-mode browser doesn't snap back to dark.
   - Topbar layout (same in static/index.html and `src/markup.js`): workspace
-    picker, accent dot, Max agents, **Talk to the manager**, Show verified,
-    theme toggle (SPA only), **⚙ settings popover** (agent / budget / where
-    changes land), manager badge. The new-request form is just textarea +
-    📎 + Send.
+    picker, accent dot, Max agents, **Talk to the manager**, theme toggle
+    (SPA only), **⚙ settings popover** (agent / budget / where changes land),
+    **manager group** (`#mgr-group` — the status badge plus, in the extension,
+    the Stop segment; see "The extension creates its own manager automation").
+    The new-request form is just textarea + 📎 + Send.
+  - **Show verified is not in the topbar** (user request 2026-05-21): it is an
+    icon-only chip (`#show-verified`, an eye) on the **Finished** column's
+    header, beside the lane it reveals. No text label — the "Show verified" /
+    "Hide verified" wording lives in `title`/`aria-label` and the on state is
+    `aria-pressed` + `.active` (lit in the verified lane's colour), all set by
+    `renderVerifiedToggle`, which must therefore never touch `textContent`.
   - Tests: `tests/test_workspace_settings.py` (run with `.venv/bin/python`),
     and in `extensions/kanban-manager/test/extension.test.js` the
     "takes the theme and the verified toggle from the workspace record" and
@@ -690,9 +697,18 @@ service to run:
   `ensure_manager_automation`. The top-right control is orange **"Start
   manager"** whenever the workspace has no automation, points at one the
   backend 404s on (`missing` in `live.automationStatus`), or has one that is
-  disabled; next to a live manager sits **"Stop manager"**
+  disabled; next to a live manager sits **"Stop"**
   (`PATCH {"enabled": false}` — the automation is kept so its run history and
   id survive a restart). Details worth knowing before touching it:
+  - Status and start/stop are **one button group** (user request 2026-05-21):
+    `#mgr-group` is the pill (border, radius, `overflow: hidden`) and its
+    children are segments — `#mgr-badge` (status; click = start or trigger)
+    and `#mgr-stop`, which has only a divider for a border. So the group, not
+    the badge, carries every border colour (`:has(.mgr-badge.err)`,
+    `:has(.mgr-badge.start)`), and hiding the control means hiding
+    `#mgr-group` as well as the badge. `#mgr-stop` is extension-only, so its
+    segment styles live in `src/setup.css` (pre-scoped) while the group and
+    badge are in `static/style.css` with the rest of the design.
   - `build.mjs` compiles `automation/*.py` into the bundle
     (`__VIBE_AUTOMATION__`, same trick as `__VIBE_CSS__`), because the Canvas
     machine has no vibe-manager checkout. `automation/` stays the source of

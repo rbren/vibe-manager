@@ -301,8 +301,14 @@ async function triggerManager() {
 
 function renderMgrBadge() {
   const badge = $("#mgr-badge");
-  if (!state.ws || !state.ws.automation_id) { badge.hidden = true; return; }
+  const group = $("#mgr-group");
+  if (!state.ws || !state.ws.automation_id) {
+    badge.hidden = true;
+    group.hidden = true;
+    return;
+  }
   badge.hidden = false;
+  group.hidden = false;
   badge.classList.remove("ok", "err", "paused");
   const a = state.automation;
   const text = $("#mgr-text");
@@ -367,7 +373,6 @@ function render() {
   $("#ctl-concurrency").hidden = !has;
   $("#ctl-settings").hidden = !has;
   $("#ctl-accent").hidden = !has;
-  $("#show-verified").hidden = !has;
   $("#manager-chat-open").hidden = !has;
   if (!has) { closeAccentMenu(); closeSettingsMenu(); }
   applyAccent();
@@ -756,9 +761,14 @@ function toggleVerified() {
   patchWorkspace({ show_verified: state.showVerified });
 }
 
+/* Icon-only, so the label it would have carried lives in the tooltip and the
+   accessible name instead. */
 function renderVerifiedToggle() {
   const btn = $("#show-verified");
-  btn.textContent = state.showVerified ? "Hide verified" : "Show verified";
+  const label = state.showVerified ? "Hide verified" : "Show verified";
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+  btn.setAttribute("aria-pressed", String(state.showVerified));
   btn.classList.toggle("active", state.showVerified);
 }
 
