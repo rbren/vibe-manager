@@ -570,6 +570,14 @@ Operational notes for the extension:
   the **agent server** (18000, `X-Session-API-Key`), not the Canvas static
   server — the ingress rejects the agent-server key on its own routes.
   Verify a deploy by diffing the served bundle against `dist/extension.js`.
+- **Check the store layout before installing a bundle.** The installed bundle
+  is the only reader the user's board has, so one built from a tree that
+  predates a store migration empties the board. Compare what is on disk
+  (`workspaces/<id>/tickets/` per-ticket files vs. a single `board.json`)
+  against the `src/store.js` you are about to ship, and never install from a
+  checkout whose extension sources are older than the live data — observed
+  2026-05-21, when master's extension still read `board.json` while the
+  deployed board had already migrated to `tickets/`.
 - Page route is `/extensions/<extension-name>/<page path>`, e.g.
   `/extensions/kanban-manager/board` — NOT the bare `/board` from the manifest.
 - Testing the bundle under linkedom: it has no setter for
