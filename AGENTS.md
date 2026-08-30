@@ -727,10 +727,14 @@ Operational notes for the extension:
     the store, so it writes a stray `<store>/bin/<random_id>/` (workspace path
     under /tmp) into the REAL store; one was removed 2026-08-30. Harmless but
     delete it, like the `cache-*` workspaces.
-  - Installs land **disabled**, including a `force` reinstall, so an install
-    never silently swaps the board out from under the user — after deploying,
-    tell them to enable it in Customize → Extensions. The old `vibe-board`
-    install (still enabled, still reading `board.json`) was uninstalled with
+  - A first install lands **disabled**, so an install never silently swaps the
+    board out from under the user — tell them to enable it in
+    Customize → Extensions. A `force` reinstall of an already-enabled
+    extension KEEPS it enabled (observed 2026-08-30: the response came back
+    `"enabled": true` and the served bundle was the new one immediately), so
+    shipping a bundle change needs no action from the user beyond a reload.
+    The old `vibe-board` install (still enabled, still reading `board.json`)
+    was uninstalled with
     `DELETE /api/canvas-extensions/installed/vibe-board` on 2026-08-30.
   - The GitHub token for upstream pushes comes from
     `GET /api/settings/secrets/GITHUB_PERSONAL_ACCESS_TOKEN` on the agent
