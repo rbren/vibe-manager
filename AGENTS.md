@@ -139,7 +139,7 @@ via /etc/nginx/.htpasswd).
   recent action summary (kanban card + drawer, pulsing dot). `app.py` watches
   each in_progress conversation server-side: seeds via the agent server's
   `GET /api/conversations/<id>/events/search` (TIMESTAMP_DESC), then holds a
-  websocket to `ws://ŌĆ”:18000/sockets/events/<id>`; the LLM-predicted `summary`
+  websocket to `ws://…:18000/sockets/events/<id>`; the LLM-predicted `summary`
   lives inside each ActionEvent's `tool_call.arguments` JSON (see
   `extract_action_summary`). The cached value rides on the board payload as
   `latest_action` ({summary, tool, timestamp}) only for in_progress tickets,
@@ -157,10 +157,16 @@ via /etc/nginx/.htpasswd).
     `.card.live` rail to a static `.activity-check` ✓ (`.card-activity.done`
     / `.drawer-activity.done`, caret suppressed). Without it a card whose
     worker had finished kept blinking as if work were still happening.
-    **The Canvas extension still needs the same treatment**: `Live.decorate`
-    in `extensions/kanban-manager/src/live.js` doesn't derive
-    `conversation_status`, so `extension.js` always adds `.live`. The CSS is
-    already there (it builds from `static/style.css`).
+    **The Canvas extension mirrors this** (that is the board the user
+    actually looks at): `Live.conversationStatus` caches `execution_status`
+    for 10 s and `Live.decorate` puts it on in_progress tickets, so
+    `extension.js` (`workerDone` / `activityNodes`) makes the same choice.
+    One `refreshConversation` GET fills the model and status caches together —
+    do not add a second request for a derived field. Tests: the
+    "worker activity indicator" case in `test/extension.test.js` renders the
+    built bundle with running/finished/error workers, and `test/live.test.mjs`
+    covers the shared fetch. The CSS needs nothing: the bundle builds from
+    `static/style.css`.
 - **Per-ticket LLM model chip**: every ticket dict with a `conversation_id`
   carries `llm_model` (from the agent server's conversation metadata,
   `agent.llm.model` on `GET /api/conversations/<id>`). app.py caches it

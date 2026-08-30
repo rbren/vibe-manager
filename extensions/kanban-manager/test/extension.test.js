@@ -99,6 +99,10 @@ function hostWithStore({
   /* Automation backend doubles, keyed by id. `null` for an id the backend
      doesn't have, which is how a deleted automation looks. */
   automations = {},
+  /* Agent-server conversation metadata keyed by id, each optionally carrying
+     `events` for the action-summary search. An id that isn't here 404s, which
+     is how a deleted conversation looks. */
+  conversations = {},
   createdAutomationId = "auto-created",
   /* Awaited before a download is served, so a test can hold a read open and
      make a response land after something else happened. */
@@ -129,6 +133,17 @@ function hostWithStore({
             throw err;
           }
           return automations[id];
+        }
+        if (path.startsWith("/api/conversations/")) {
+          const rest = path.slice("/api/conversations/".length);
+          const meta = conversations[rest.split(/[?/]/)[0]];
+          if (!meta) {
+            const err = new Error("404 not found");
+            err.status = 404;
+            throw err;
+          }
+          if (rest.includes("/events/search")) return { items: meta.events || [] };
+          return meta;
         }
         if (path.startsWith("/api/file/download")) {
           const target = filePath(path);
@@ -675,6 +690,82 @@ describe("workspace picker", () => {
     );
     assert.equal(option.textContent, "demo");
     dispose();
+  });
+});
+
+describe("worker activity indicator", () => {
+  function conversation(status, summary) {
+    return {
+      execution_status: status,
+      agent: { llm: { model: "anthropic/claude-fable-5" } },
+      events: [
+        {
+          tool_call: { name: "terminal", arguments: JSON.stringify({ summary }) },
+          timestamp: "2026-08-29T19:37:00Z",
+        },
+      ],
+    };
+  }
+
+  function ticket(id, convId) {
+    return {
+      id,
+      status: "in_progress",
+      conversation_id: convId,
+      entries: [{ id: `e-${id}`, author: "user", body: "beat counter", created_at: 1 }],
+    };
+  }
+
+  /* The pulsing dot means "this worker is still acting". It kept pulsing after
+     the conversation ended, so a finished card claimed live telemetry. */
+  it("pulses for a running worker and shows a checkmark once it ends", async () => {
+    dom.store.clear();
+    const home = "/home/tester";
+    const root = `${home}/.openhands/vibe-manager`;
+    const { host } = hostWithStore({
+      home,
+      files: {
+        [`${root}/index.json`]: {
+          workspaces: [{ id: "w1", name: "demo", path: "/git/demo", max_concurrent: 3 }],
+        },
+        [`${root}/workspaces/w1/board.json`]: {
+          tickets: [
+            ticket("t-run", "c-run"),
+            ticket("t-done", "c-done"),
+            ticket("t-err", "c-err"),
+          ],
+        },
+      },
+      conversations: {
+        "c-run": conversation("running", "Editing the beat counter"),
+        "c-done": conversation("finished", "Pushed beat/cycle divisor readout to main"),
+        "c-err": conversation("error", "Pushed beat/cycle divisor readout to main"),
+      },
+    });
+
+    const container = makeContainer();
+    const dispose = mountBoard({ container, path: "demo", navigate: () => {}, host });
+    const card = (id) => container.querySelector(`.card[data-id="${id}"]`);
+    // dispose() in a finally: a failed assertion would otherwise leave the
+    // poll timers running and the test runner would never exit.
+    try {
+      // Summaries and statuses are fetched in the background during the first
+      // render, so they only reach the DOM on the next 5s board poll.
+      await waitFor(() => card("t-done")?.querySelector(".card-activity"), 8000);
+
+      assert.ok(card("t-run").classList.contains("live"), "running worker keeps the live rail");
+      assert.ok(card("t-run").querySelector(".activity-dot"), "running worker pulses");
+      assert.equal(card("t-run").querySelector(".activity-check"), null);
+
+      for (const id of ["t-done", "t-err"]) {
+        assert.equal(card(id).classList.contains("live"), false, `${id} drops the live rail`);
+        assert.ok(card(id).querySelector(".card-activity.done"), `${id} marked done`);
+        assert.equal(card(id).querySelector(".activity-dot"), null, `${id} stops pulsing`);
+        assert.equal(card(id).querySelector(".activity-check").textContent, "✓");
+      }
+    } finally {
+      dispose();
+    }
   });
 });
 

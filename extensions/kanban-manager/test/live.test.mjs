@@ -163,10 +163,51 @@ test("primeModel and invalidateModel manage the cache", () => {
   assert.equal(live.models.get("conv-c"), undefined);
 });
 
+/** A host answering conversation metadata from a fixture, counting requests. */
+function metaHost(meta) {
+  const calls = [];
+  return {
+    calls,
+    backend: { id: "local" },
+    agentServer: {
+      async request({ path }) {
+        calls.push(path);
+        return meta;
+      },
+    },
+  };
+}
+
+test("one conversation-metadata request fills both the model and status caches", async () => {
+  const host = metaHost({
+    agent: { llm: { model: "anthropic/claude-fable-5" } },
+    execution_status: "finished",
+  });
+  const live = new Live(host);
+
+  assert.equal(live.conversationStatus("c1"), null, "nothing cached yet");
+  assert.equal(live.llmModel("c1"), null, "the same in-flight fetch serves both");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(host.calls.length, 1, "one GET, not one per derived field");
+  assert.equal(live.conversationStatus("c1"), "finished");
+  assert.equal(live.llmModel("c1"), "anthropic/claude-fable-5");
+});
+
+test("a failed conversation refetch keeps the last known status", async () => {
+  const live = new Live(brokenHost());
+  live.statuses.set("c1", "running");
+  live.statuses.entries.get("c1").at = 0; // force staleness
+  assert.equal(live.conversationStatus("c1"), "running", "peek covers the refetch");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(live.statuses.peek("c1"), "running");
+});
+
 test("decorate adds conversation_url and gates derived fields by status", () => {
   const live = new Live(makeHost());
   live.primeModel("c1", "anthropic/claude-sonnet");
   live.summaries.set("c1", { summary: "Working", tool: "terminal", timestamp: null });
+  live.statuses.set("c1", "running");
 
   const [running, pending, done] = live.decorate([
     { id: "t1", status: "in_progress", conversation_id: "c1" },
@@ -176,13 +217,16 @@ test("decorate adds conversation_url and gates derived fields by status", () => 
 
   assert.equal(running.conversation_url, "https://canvas.example/conversations/c1");
   assert.equal(running.latest_action.summary, "Working");
+  assert.equal(running.conversation_status, "running");
   assert.equal(running.llm_model, "anthropic/claude-sonnet");
 
   assert.equal(pending.conversation_url, null);
   assert.equal(pending.latest_action, null);
+  assert.equal(pending.conversation_status, null);
   assert.equal(pending.llm_model, null);
 
   assert.equal(done.latest_action, null, "only in_progress shows a live summary");
+  assert.equal(done.conversation_status, null, "and only in_progress needs the status");
   assert.equal(done.llm_model, "anthropic/claude-sonnet");
 });
 

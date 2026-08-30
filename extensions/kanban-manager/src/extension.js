@@ -108,6 +108,26 @@ function shortModel(model) {
   return model.split("/").pop();
 }
 
+// Execution statuses in which a worker conversation has stopped acting: its
+// last action line is history, so the card shows a checkmark, not a pulse.
+const DONE_CONV_STATUSES = new Set([
+  "finished", "idle", "error", "stuck", "paused", "deleted",
+]);
+
+function workerDone(t) {
+  return DONE_CONV_STATUSES.has(t.conversation_status);
+}
+
+function activityNodes(act, done) {
+  const mark = document.createElement("span");
+  mark.className = done ? "activity-check" : "activity-dot";
+  if (done) mark.textContent = "✓";
+  const text = document.createElement("span");
+  text.className = "activity-text";
+  text.textContent = act.summary;
+  return [mark, text];
+}
+
 /* ------------------------------------------------------------------ mount */
 
 /**
@@ -663,17 +683,12 @@ export function mountBoard({ container, path, navigate, host }) {
     }
 
     if (t.status === "in_progress" && t.latest_action?.summary) {
-      el.classList.add("live");
+      const done = workerDone(t);
+      if (!done) el.classList.add("live");
       const act = document.createElement("div");
-      act.className = "card-activity";
+      act.className = done ? "card-activity done" : "card-activity";
       act.title = t.latest_action.tool ? `tool: ${t.latest_action.tool}` : "";
-      const dot = document.createElement("span");
-      dot.className = "activity-dot";
-      act.appendChild(dot);
-      const text = document.createElement("span");
-      text.className = "activity-text";
-      text.textContent = t.latest_action.summary;
-      act.appendChild(text);
+      act.append(...activityNodes(t.latest_action, done));
       el.appendChild(act);
     }
 
@@ -972,17 +987,13 @@ export function mountBoard({ container, path, navigate, host }) {
 
     const activity = $("#drawer-activity");
     const act = t.status === "in_progress" ? t.latest_action : null;
+    const done = workerDone(t);
     activity.hidden = !act?.summary;
     activity.innerHTML = "";
+    activity.classList.toggle("done", !!act?.summary && done);
     if (act?.summary) {
       activity.title = act.tool ? `tool: ${act.tool}` : "";
-      const dot = document.createElement("span");
-      dot.className = "activity-dot";
-      activity.appendChild(dot);
-      const text = document.createElement("span");
-      text.className = "activity-text";
-      text.textContent = act.summary;
-      activity.appendChild(text);
+      activity.append(...activityNodes(act, done));
     }
 
     const atts = $("#drawer-attachments");
