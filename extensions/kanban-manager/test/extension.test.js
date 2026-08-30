@@ -466,6 +466,27 @@ describe("mount", () => {
     dispose();
   });
 
+  /* The control is deliberately unlabelled and sits with the workspace it
+     belongs to, so its identity is "the dot beside the workspace picker". */
+  it("puts the primary-colour picker beside the workspace picker, as a bare dot", async () => {
+    dom.store.clear();
+    const container = makeContainer();
+    const dispose = mountBoard({
+      container,
+      path: "",
+      navigate: () => {},
+      host: hostWithStore().host,
+    });
+
+    const picker = container.querySelector(".control-workspace");
+    assert.equal(picker.nextElementSibling.id, "ctl-accent");
+    const toggle = container.querySelector("#accent-toggle");
+    assert.equal(toggle.textContent.trim(), "", "no text label, just the dot");
+    assert.ok(toggle.querySelector(".accent-dot"));
+    assert.equal(toggle.getAttribute("aria-label"), "Primary colour");
+    dispose();
+  });
+
   it("falls back to the default primary for a workspace without one", async () => {
     dom.store.clear();
     const home = "/home/tester";

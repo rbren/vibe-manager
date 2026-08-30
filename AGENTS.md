@@ -333,41 +333,63 @@ via /etc/nginx/.htpasswd).
   `vibe.theme`; an inline `<script>` in index.html's head applies the saved
   theme before first paint to avoid a flash.
   - Light palette is deliberately soft (d7a46d5, restated in the 2026-05-21
-    overhaul): off-white lilac-paper surfaces (no pure #fff cards or fields),
-    low-opacity shadows/glows, eased near-black text, desaturated lane
-    colours. Keep new light-mode tokens muted to match — "less jarring" is a
-    user requirement.
+    overhaul): paper surfaces tinted with the workspace's primary rather than
+    white (no pure #fff cards or fields), low-opacity shadows/glows, eased
+    near-black text, desaturated lane colours. Keep new light-mode tokens
+    muted to match — "less jarring" is a user requirement.
 - **Primary colour per workspace (2026-05-21)**: each workspace picks one of
   exactly TEN primaries — ember, amber, citron, jade, teal, azure, iris,
   orchid, rose, slate — and the whole theme shifts with it, in both modes.
-  - How it works: `:root` declares `--accent-<name>` for all ten plus
-    `--accent` (default ember), and EVERY surface/line/text/control token is
-    `color-mix(in oklab, var(--accent) N%, <neutral base>)`. The only thing a
-    palette switch changes is one declaration —
-    `html[data-accent="<name>"] { --accent: var(--accent-<name>); }` — and the
-    light block restates the ten primaries darker, so one attribute repaints
-    both modes. The neutral bases were solved so the *average* accent lands on
-    the pre-existing palette; don't hand-edit one mix without re-deriving.
-    Lanes (`--lane-*`) are deliberately NOT accent-derived: hue encodes status
-    and must not collide with the primary. `--flare` IS the accent (it used to
-    be a fixed orange; ember reproduces it).
+  - The primary IS the background, not a tint on top of one (2026-08-30: the
+    first cut washed a fixed neutral base with the accent and the user could
+    not tell the palettes apart). `:root` declares `--accent-<name>` for all
+    ten plus `--accent` (default ember), and EVERY surface/line/text/control
+    token is that hue pinned to a step of a tonal ramp:
+    `oklch(from var(--accent) <L> <C> h)` — only the hue comes from the
+    primary, so all ten palettes are one design in ten hues and no palette is
+    lighter or louder than another. Dark runs L .205 (app background) → .42
+    (borders) with chalk text at L .95; light mirrors it, L .935 paper → .30
+    text. A palette switch changes one declaration,
+    `html[data-accent="<name>"] { --accent: var(--accent-<name>); }`, and the
+    light block restates the ten primaries darker so they still carry as a
+    flare on paper (only their hue reaches the surfaces).
+    - Keep `--tone-bg` (the app-background step, one per mode) as a token: the
+      picker swatches fill themselves with `oklch(from var(--swatch)
+      var(--tone-bg) h)`, so a swatch is a preview of the background it gives
+      you rather than a sticker that might drift from it.
+    - Relative colour syntax (`oklch(from …)`) is required; it is a hard
+      dependency of the theme, not a progressive enhancement. Baseline since
+      2023 (Chrome 119, Safari 16.4, Firefox 128).
+    - Lanes (`--lane-*`) are deliberately NOT accent-derived: hue encodes
+      status and must not collide with the primary. `--flare` IS the accent
+      (it used to be a fixed orange; ember reproduces it).
+    - When retuning the ramp, check all twenty combinations at once rather
+      than eyeballing one: a throwaway headless-Chromium script that resolves
+      every token to sRGB per accent and prints WCAG ratios is the fast loop
+      (the shipped ramp holds text/ink ≈15 dark and ≈11 light, dim/card ≥5,
+      lane rails ≥3.7 on card). Uniformity across the ten is the point.
   - Storage is per workspace, next to the other workspace settings:
     `workspaces.accent` in vibe.db (migration adds the column, default
     `ember`, PATCH `/api/workspaces/<id>` validates against `ACCENTS` in
     app.py → 400) and the `accent` field on the index.json workspace record
     for the Canvas extension (`DEFAULT_ACCENT` in `src/store.js`).
-  - UI: a topbar `.control-accent` popover (`#accent-toggle` + `#accent-menu`,
-    ten `.accent-swatch` buttons, role=menuitemradio, Escape/outside click
-    closes) in BOTH static/index.html and the extension's `src/markup.js`.
-    `applyAccent()` writes `data-accent` — on `<html>` in the SPA, on the
-    `.vibe-ext` root in the extension (same scoping rule as the theme). The
-    SPA also mirrors the choice into localStorage `vibe.accent` purely as a
-    paint-time hint for the head script.
+  - UI: a `.control-accent` popover (`#accent-toggle` + `#accent-menu`, ten
+    `.accent-swatch` buttons, role=menuitemradio, Escape/outside click closes)
+    sitting immediately after `.control-workspace` in the topbar — the colour
+    belongs to the workspace, so it lives next to it — in BOTH
+    static/index.html and the extension's `src/markup.js`. The toggle is a
+    bare dot in the current primary with NO text label (user asked for the dot
+    alone); its accessible name comes from `aria-label`, and the palette name
+    from `title`. `applyAccent()` writes `data-accent` — on `<html>` in the
+    SPA, on the `.vibe-ext` root in the extension (same scoping rule as the
+    theme). The SPA also mirrors the choice into localStorage `vibe.accent`
+    purely as a paint-time hint for the head script.
   - The ten names live in three places that must stay in step: `ACCENTS` in
     app.py (validation), `ACCENTS` in static/app.js and extension.js (the
     picker), and the `--accent-<name>` tokens + `.accent-swatch[data-accent]`
-    rules in style.css. Tests: `tests/test_workspace_accent.py` and the two
-    primary-colour cases in `extensions/kanban-manager/test/extension.test.js`.
+    rules in style.css. Tests: `tests/test_workspace_accent.py` and the three
+    primary-colour cases in `extensions/kanban-manager/test/extension.test.js`
+    (theme applied and written back, default fallback, picker shape/position).
 - `static/` ├óŌé¼ŌĆØ vanilla JS SPA (no build step). Kanban columns: pending,
   in_progress, needs_input, finished. Drag vertically to reprioritize; click
   a card for the append-only drawer; each card links to its conversation.
