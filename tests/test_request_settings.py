@@ -18,6 +18,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -85,6 +86,78 @@ def test_budget_must_be_positive():
     )
     assert r.status_code == 400, r.text
     print("ok: a non-positive budget is rejected")
+
+
+def stub_conversation_fetch() -> list[str]:
+    """Replace the background metadata fetch; tests never hit the agent server."""
+    fetched: list[str] = []
+
+    def _stub(conv_id: str) -> None:
+        fetched.append(conv_id)
+        with vibe_app._conv_lock:
+            vibe_app._conv_inflight.discard(conv_id)
+
+    vibe_app._fetch_conversation = _stub
+    return fetched
+
+
+def cache_spend(conv_id: str, spend: float, age: float = 0.0) -> None:
+    with vibe_app._conv_lock:
+        vibe_app._spend_cache[conv_id] = {"spend": spend, "fetched_at": time.time() - age}
+
+
+def test_board_carries_spend_against_each_ticket_budget():
+    real_fetch = vibe_app._fetch_conversation
+    stub_conversation_fetch()
+    try:
+        running = client.post(
+            f"/api/workspaces/{WS_ID}/tickets",
+            json={"body": "burning money", "max_budget": 25},
+        ).json()["id"]
+        r = client.patch(
+            f"/api/manager/tickets/{running}",
+            json={"status": "in_progress", "conversation_id": "conv-spend"},
+        )
+        assert r.status_code == 200, r.text
+        cache_spend("conv-spend", 4.25)
+
+        idle = client.post(
+            f"/api/workspaces/{WS_ID}/tickets", json={"body": "not dispatched yet"},
+        ).json()["id"]
+
+        t = board_ticket(running)
+        assert t["max_budget"] == 25.0
+        assert t["spend_usd"] == 4.25
+
+        waiting = board_ticket(idle)
+        assert waiting["max_budget"] == 10.0
+        assert waiting["spend_usd"] is None, "no conversation means no spend to report"
+    finally:
+        vibe_app._fetch_conversation = real_fetch
+    print("ok: the board reports each ticket's spend alongside its budget")
+
+
+def test_spend_is_cached_and_sticky_once_the_worker_is_done():
+    real_fetch = vibe_app._fetch_conversation
+    fetched = stub_conversation_fetch()
+    try:
+        cache_spend("conv-fresh", 1.5)
+        assert vibe_app.get_conversation_spend("conv-fresh") == 1.5
+        assert fetched == [], "a fresh total is not re-polled"
+
+        cache_spend("conv-stale", 2.5, age=vibe_app.SPEND_CACHE_TTL + 1)
+        assert vibe_app.get_conversation_spend("conv-stale") == 2.5, "last known meanwhile"
+        assert fetched == ["conv-stale"], fetched
+
+        cache_spend("conv-done", 7.0, age=vibe_app.SPEND_CACHE_TTL + 1)
+        assert vibe_app.get_conversation_spend("conv-done", sticky=True) == 7.0
+        assert fetched == ["conv-stale"], "a finished worker spends no more"
+
+        assert vibe_app.get_conversation_spend("conv-unknown") is None
+        assert fetched == ["conv-stale", "conv-unknown"], fetched
+    finally:
+        vibe_app._fetch_conversation = real_fetch
+    print("ok: spend is cached, refreshed in the background and sticky when done")
 
 
 def test_ticket_profile_overrides_the_managers_pick():
@@ -182,6 +255,23 @@ def test_conversation_spend_sums_every_llm():
     assert m.conversation_spend(conv) == 3.75
     assert m.conversation_spend({}) == 0.0, "no stats yet is not a spend"
     print("ok: conversation spend sums the accumulated cost of every LLM")
+
+
+def test_app_and_poller_agree_on_what_a_conversation_spent():
+    conv = {"stats": {"usage_to_metrics": {
+        "default": {"accumulated_cost": 3.5},
+        "condenser": {"accumulated_cost": 0.25},
+    }}}
+    assert vibe_app.extract_conversation_spend(conv) == 3.75
+    assert vibe_app.extract_conversation_spend(conv) == m.conversation_spend(conv), (
+        "the number on the card must be the one the budget stop judges"
+    )
+    assert vibe_app.extract_conversation_spend({}) == 0.0
+    assert vibe_app.extract_conversation_spend({"stats": None}) == 0.0
+    assert vibe_app.extract_conversation_spend(
+        {"stats": {"usage_to_metrics": {"default": {"accumulated_cost": None}}}}
+    ) == 0.0
+    print("ok: the board's spend is the same sum the budget stop enforces")
 
 
 def test_budget_stop_pauses_the_worker_once():

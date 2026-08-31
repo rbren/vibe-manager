@@ -372,20 +372,27 @@ def note_activity_interest(conv_ids: list[str]) -> None:
         _loop.call_soon_threadsafe(_start, cid)
 
 
-# ------------------------------------------- conversation model + exec status
+# --------------------------------- conversation model + exec status + spend
 #
-# Two things ride on the board from the agent server's conversation metadata
+# Three things ride on the board from the agent server's conversation metadata
 # (GET /api/conversations/<id>): the model the conversation runs on
-# (agent.llm.model) and its execution_status, which tells the SPA whether the
-# worker is still acting. One fetch feeds both caches, in a background thread,
-# so the SPA's 5s board poll never blocks on — or hammers — the agent server,
-# and the session API key stays server-side.
+# (agent.llm.model), its execution_status, which tells the SPA whether the
+# worker is still acting, and what it has spent so far
+# (stats.usage_to_metrics[*].accumulated_cost — the same sum the poller's
+# conversation_spend() enforces budgets with). One fetch feeds all three
+# caches, in a background thread, so the SPA's 5s board poll never blocks on —
+# or hammers — the agent server, and the session API key stays server-side.
 
 MODEL_CACHE_TTL = 300.0
 CONV_STATUS_TTL = 10.0  # the live/done indicator has to flip promptly
+# A worker only spends while it is running, and a running worker already gets
+# refreshed on the status cadence above; this TTL is what keeps parked cards
+# (needs_input, no longer spending) from re-polling every board request.
+SPEND_CACHE_TTL = 60.0
 _conv_lock = threading.Lock()
 _model_cache: dict[str, dict] = {}  # conv_id -> {"model": str|None, "fetched_at": float}
 _status_cache: dict[str, dict] = {}  # conv_id -> {"status": str|None, "fetched_at": float}
+_spend_cache: dict[str, dict] = {}  # conv_id -> {"spend": float|None, "fetched_at": float}
 _conv_inflight: set[str] = set()
 
 
@@ -397,6 +404,27 @@ def extract_conversation_model(meta: dict) -> str | None:
     if isinstance(model, str) and model.strip():
         return model.strip()
     return None
+
+
+def extract_conversation_spend(meta: dict) -> float:
+    """Total USD a conversation has spent, across every LLM it used.
+
+    Mirrors `conversation_spend()` in automation/main.py, which is what pauses
+    a worker at its ticket's budget — the board must show the same number the
+    cap is judged against.
+    """
+    stats = meta.get("stats")
+    usage = stats.get("usage_to_metrics") if isinstance(stats, dict) else None
+    if not isinstance(usage, dict):
+        return 0.0
+    total = 0.0
+    for metrics in usage.values():
+        cost = metrics.get("accumulated_cost") if isinstance(metrics, dict) else None
+        try:
+            total += float(cost or 0.0)
+        except (TypeError, ValueError):
+            continue
+    return total
 
 
 def _prime_model_cache(conv_id: str, model: str | None) -> None:
@@ -412,12 +440,13 @@ def _invalidate_model_cache(conv_id: str) -> None:
 
 
 def _fetch_conversation(conv_id: str) -> None:
-    """Refresh model + execution status from one conversation-metadata GET."""
-    model = status = None
+    """Refresh model, execution status and spend from one metadata GET."""
+    model = status = spend = None
     try:
         meta = agent_get(f"/api/conversations/{conv_id}?include_skills=false", timeout=30)
         model = extract_conversation_model(meta)
         status = meta.get("execution_status")
+        spend = extract_conversation_spend(meta)
     except Exception as exc:
         log.info("conversation fetch failed for %s: %s", conv_id, exc)
     now = time.time()
@@ -430,6 +459,10 @@ def _fetch_conversation(conv_id: str) -> None:
         if status is None and prev_status:
             status = prev_status.get("status")
         _status_cache[conv_id] = {"status": status, "fetched_at": now}
+        prev_spend = _spend_cache.get(conv_id)
+        if spend is None and prev_spend:
+            spend = prev_spend.get("spend")
+        _spend_cache[conv_id] = {"spend": spend, "fetched_at": now}
         _conv_inflight.discard(conv_id)
 
 
@@ -468,6 +501,24 @@ def get_conversation_status(conv_id: str) -> str | None:
         _conv_inflight.add(conv_id)
     _refresh_conversation(conv_id)
     return status
+
+
+def get_conversation_spend(conv_id: str, sticky: bool = False) -> float | None:
+    """Cached USD spend for a conversation; refreshes in the background.
+
+    `sticky` (terminal-status tickets): a known total never expires — the
+    conversation has stopped spending, so don't re-poll for it.
+    """
+    now = time.time()
+    with _conv_lock:
+        entry = _spend_cache.get(conv_id)
+        spend = entry["spend"] if entry else None
+        fresh = entry is not None and now - entry["fetched_at"] < SPEND_CACHE_TTL
+        if (sticky and spend is not None) or fresh or conv_id in _conv_inflight:
+            return spend
+        _conv_inflight.add(conv_id)
+    _refresh_conversation(conv_id)
+    return spend
 
 
 # --------------------------------------------------------------------- models
@@ -597,11 +648,16 @@ def ticket_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         if row["status"] == "in_progress" and row["conversation_id"]
         else None
     )
+    terminal = row["status"] in ("finished", VERIFIED)
     d["llm_model"] = (
-        get_conversation_model(
-            row["conversation_id"],
-            sticky=row["status"] in ("finished", VERIFIED),
-        )
+        get_conversation_model(row["conversation_id"], sticky=terminal)
+        if row["conversation_id"]
+        else None
+    )
+    # What this ticket's worker has spent so far, against its `max_budget`.
+    # Null means "nothing has run yet" — the card renders the budget alone.
+    d["spend_usd"] = (
+        get_conversation_spend(row["conversation_id"], sticky=terminal)
         if row["conversation_id"]
         else None
     )

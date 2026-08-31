@@ -183,10 +183,27 @@ via /etc/nginx/.htpasswd).
     its ticket's budget, moves the card to needs_input and leaves a
     manager_note. Each conversation is stopped **once** (`budget_stopped` in
     the KV state) so a deliberate resume is not immediately undone.
+  - **Budget and spend on every card** (user request 2026-05-21): cards and the
+    drawer carry a `.chip.budget` reading `$<spent> / $<budget>`, which turns
+    `--danger` (`.over`) at or past the cap the poller pauses workers at. The
+    spend is DERIVED, never stored, and there is one sum in each half: app.py's
+    `extract_conversation_spend()` (identical to the poller's
+    `conversation_spend()`) rides along on the single conversation-metadata GET
+    that already feeds the model + execution-status caches, cached in
+    `_spend_cache` (`SPEND_CACHE_TTL` 60 s — a running worker is refreshed on
+    the 10 s status cadence anyway; sticky for finished/verified) and exposed
+    per ticket as `spend_usd` on the board payload. The extension mirrors it in
+    `src/live.js` (`conversationSpend()` + the `spends` TtlCache + `spendUsd`,
+    decorating tickets with `spend_usd`), since its board has no server.
+    A ticket with no conversation reports `spend_usd: null` and its card shows
+    `$0.00 / $<budget>`; a legacy ticket with no `max_budget` shows the spend
+    alone. **Any test that stubs `_fetch_conversation` must stamp
+    `_spend_cache` too**, or one board row looks like two fetches.
   - Tests: `tests/test_request_settings.py` (run with
-    `.venv/bin/python`), the "submitting a new request" cases in
-    `extensions/kanban-manager/test/extension.test.js`, `createTicket` in
-    `test/store.test.mjs`, and `llmProfiles` in `test/live.test.mjs`.
+    `.venv/bin/python`), the "submitting a new request" and "budget and spend"
+    cases in `extensions/kanban-manager/test/extension.test.js`, `createTicket`
+    in `test/store.test.mjs`, and `llmProfiles` / `conversationSpend` in
+    `test/live.test.mjs`.
 - **Ticket attachments**: users can attach files/images to tickets (paperclip
   button on the new-ticket form and in the drawer's append form; drawer shows
   image thumbnails + file chips, cards show a count chip). `attachments`

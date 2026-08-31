@@ -67,7 +67,7 @@ REAL_FETCH = vibe_app._fetch_conversation
 def stub_fetches(record: list | None = None):
     """Replace the background fetch so tests never hit the agent server.
 
-    It keeps the real fetch's bookkeeping — both caches stamped, inflight
+    It keeps the real fetch's bookkeeping — every cache stamped, inflight
     cleared — so a board request costs one fetch per conversation whether or
     not the thread has already finished.
     """
@@ -78,8 +78,10 @@ def stub_fetches(record: list | None = None):
         with vibe_app._conv_lock:
             model = (vibe_app._model_cache.get(conv_id) or {}).get("model")
             status = (vibe_app._status_cache.get(conv_id) or {}).get("status")
+            spend = (vibe_app._spend_cache.get(conv_id) or {}).get("spend")
             vibe_app._model_cache[conv_id] = {"model": model, "fetched_at": now}
             vibe_app._status_cache[conv_id] = {"status": status, "fetched_at": now}
+            vibe_app._spend_cache[conv_id] = {"spend": spend, "fetched_at": now}
             vibe_app._conv_inflight.discard(conv_id)
     vibe_app._fetch_conversation = _stub
 
@@ -92,11 +94,19 @@ def prime_status(conv_id: str, status: str = "running") -> None:
         vibe_app._status_cache[conv_id] = {"status": status, "fetched_at": time.time()}
 
 
+def prime_spend(conv_id: str, spend: float = 0.0, fetched_at: float | None = None) -> None:
+    with vibe_app._conv_lock:
+        vibe_app._spend_cache[conv_id] = {
+            "spend": spend, "fetched_at": time.time() if fetched_at is None else fetched_at,
+        }
+
+
 def forget(conv_id: str) -> None:
     """Drop all cached traces of a conversation (a ticket PATCH primes them)."""
     with vibe_app._conv_lock:
         vibe_app._model_cache.pop(conv_id, None)
         vibe_app._status_cache.pop(conv_id, None)
+        vibe_app._spend_cache.pop(conv_id, None)
         vibe_app._conv_inflight.discard(conv_id)
 
 
@@ -177,9 +187,11 @@ def test_fresh_cache_and_sticky_terminal_skip_refetch():
 
     vibe_app._prime_model_cache(conv_fresh, "model-a")
     prime_status(conv_fresh)  # in_progress cards also want the execution status
-    # Terminal-status ticket with a long-expired entry: model is sticky.
+    prime_spend(conv_fresh, 1.25)  # …and the spend against the ticket's budget
+    # Terminal-status ticket with long-expired entries: model and spend are sticky.
     with vibe_app._conv_lock:
         vibe_app._model_cache[conv_done] = {"model": "model-b", "fetched_at": 0.0}
+    prime_spend(conv_done, 3.0, fetched_at=0.0)
 
     fetched: list = []
     stub_fetches(fetched)

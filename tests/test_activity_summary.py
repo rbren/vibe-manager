@@ -54,6 +54,9 @@ def stub_fetches(record: list | None = None):
             status = (vibe_app._status_cache.get(conv_id) or {}).get("status")
             vibe_app._model_cache[conv_id] = {"model": None, "fetched_at": now}
             vibe_app._status_cache[conv_id] = {"status": status, "fetched_at": now}
+            # One real fetch fills every cache; a stub that skipped spend would
+            # look like a second request per board row.
+            vibe_app._spend_cache[conv_id] = {"spend": 0.0, "fetched_at": now}
             vibe_app._conv_inflight.discard(conv_id)
     vibe_app._fetch_conversation = _stub
 

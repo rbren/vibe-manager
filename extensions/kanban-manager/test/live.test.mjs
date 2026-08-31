@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 
-import { Live } from "../src/live.js";
+import { Live, conversationSpend } from "../src/live.js";
 
 const INGRESS = process.env.VIBE_TEST_INGRESS || "http://127.0.0.1:8000";
 const KEY = process.env.OH_SESSION_API_KEYS_0
@@ -181,20 +181,49 @@ function metaHost(meta) {
   };
 }
 
-test("one conversation-metadata request fills both the model and status caches", async () => {
+test("conversationSpend sums the accumulated cost of every LLM", () => {
+  assert.equal(
+    conversationSpend({
+      stats: {
+        usage_to_metrics: {
+          default: { accumulated_cost: 3.5 },
+          condenser: { accumulated_cost: 0.25 },
+        },
+      },
+    }),
+    3.75,
+  );
+  assert.equal(conversationSpend({}), 0, "no stats yet is not a spend");
+  assert.equal(conversationSpend(null), 0);
+  assert.equal(conversationSpend({ stats: { usage_to_metrics: { d: {} } } }), 0);
+});
+
+test("one conversation-metadata request fills the model, status and spend caches", async () => {
   const host = metaHost({
     agent: { llm: { model: "anthropic/claude-fable-5" } },
     execution_status: "finished",
+    stats: { usage_to_metrics: { default: { accumulated_cost: 1.5 } } },
   });
   const live = new Live(host);
 
   assert.equal(live.conversationStatus("c1"), null, "nothing cached yet");
   assert.equal(live.llmModel("c1"), null, "the same in-flight fetch serves both");
+  assert.equal(live.spendUsd("c1"), null, "…and the spend");
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(host.calls.length, 1, "one GET, not one per derived field");
   assert.equal(live.conversationStatus("c1"), "finished");
   assert.equal(live.llmModel("c1"), "anthropic/claude-fable-5");
+  assert.equal(live.spendUsd("c1"), 1.5);
+});
+
+test("a spend of zero is a known total, not a missing one", async () => {
+  const host = metaHost({ execution_status: "running", stats: { usage_to_metrics: {} } });
+  const live = new Live(host);
+  live.spendUsd("c1");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(live.spendUsd("c1"), 0);
+  assert.equal(host.calls.length, 1, "a cached 0 is not refetched");
 });
 
 test("a failed conversation refetch keeps the last known status", async () => {
@@ -211,6 +240,7 @@ test("decorate adds conversation_url and gates derived fields by status", () => 
   live.primeModel("c1", "anthropic/claude-sonnet");
   live.summaries.set("c1", { summary: "Working", tool: "terminal", timestamp: null });
   live.statuses.set("c1", "running");
+  live.spends.set("c1", 2.5);
 
   const [running, pending, done] = live.decorate([
     { id: "t1", status: "in_progress", conversation_id: "c1" },
@@ -222,15 +252,18 @@ test("decorate adds conversation_url and gates derived fields by status", () => 
   assert.equal(running.latest_action.summary, "Working");
   assert.equal(running.conversation_status, "running");
   assert.equal(running.llm_model, "anthropic/claude-sonnet");
+  assert.equal(running.spend_usd, 2.5);
 
   assert.equal(pending.conversation_url, null);
   assert.equal(pending.latest_action, null);
   assert.equal(pending.conversation_status, null);
   assert.equal(pending.llm_model, null);
+  assert.equal(pending.spend_usd, null, "a ticket that never ran has spent nothing");
 
   assert.equal(done.latest_action, null, "only in_progress shows a live summary");
   assert.equal(done.conversation_status, null, "and only in_progress needs the status");
   assert.equal(done.llm_model, "anthropic/claude-sonnet");
+  assert.equal(done.spend_usd, 2.5, "a finished ticket still reports what it cost");
 });
 
 // ---------------------------------------------------------------- live calls

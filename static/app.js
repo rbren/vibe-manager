@@ -430,6 +430,32 @@ function modelChip(model) {
   return chip;
 }
 
+function fmtUsd(n) {
+  return `$${Number(n).toFixed(2)}`;
+}
+
+/* Spend against the ticket's budget. Nothing has run yet -> $0.00 of the
+   budget; a ticket predating budgets has no cap, so only the spend shows. */
+function budgetChip(t) {
+  const budget = Number(t.max_budget);
+  const hasBudget = Number.isFinite(budget) && budget > 0;
+  const spend = t.spend_usd == null ? null : Number(t.spend_usd);
+  const hasSpend = spend !== null && Number.isFinite(spend);
+  if (!hasBudget && !hasSpend) return null;
+  const spent = hasSpend ? spend : 0;
+  const chip = document.createElement("span");
+  chip.className = "chip budget";
+  if (hasBudget) {
+    chip.textContent = `${fmtUsd(spent)} / ${fmtUsd(budget)}`;
+    chip.title = `spent ${fmtUsd(spent)} of the ${fmtUsd(budget)} budget`;
+    if (spent >= budget) chip.classList.add("over");
+  } else {
+    chip.textContent = fmtUsd(spent);
+    chip.title = `spent ${fmtUsd(spent)} — no budget set`;
+  }
+  return chip;
+}
+
 function workerDone(t) {
   return DONE_CONV_STATUSES.has(t.conversation_status);
 }
@@ -489,6 +515,8 @@ function cardEl(t) {
   meta.className = "card-meta";
   meta.innerHTML = `<span>#${t.id.slice(0, 6)}</span>`;
   if (t.llm_model) meta.appendChild(modelChip(t.llm_model));
+  const budget = budgetChip(t);
+  if (budget) meta.appendChild(budget);
   if (t.status === "verified" && t.verified_at) {
     const when = document.createElement("span");
     when.className = "chip verified";
@@ -825,6 +853,8 @@ function renderDrawer() {
     links.appendChild(a);
   }
   if (t.llm_model) links.appendChild(modelChip(t.llm_model));
+  const budget = budgetChip(t);
+  if (budget) links.appendChild(budget);
 
   const note = $("#drawer-note");
   note.hidden = !t.manager_note;
