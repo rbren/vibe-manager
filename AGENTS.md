@@ -783,7 +783,12 @@ Operational notes for the extension:
     full deploy below AND republishes the extension to
     DevinVinson/canvas-extensions — push the file copy to the existing open PR
     branch (`rename-to-kanban-manager`), opening a new PR only if that one is
-    closed/merged.
+    closed/merged. **PR #2 was merged upstream on 2026-08-31**, so there is no
+    long-lived branch any more: each republish now branches from
+    `upstream/main` in a fresh clone of `rbren/canvas-extensions` and opens its
+    own PR (first one: DevinVinson/canvas-extensions#3). Check
+    `GET /repos/DevinVinson/canvas-extensions/pulls?state=open` before
+    assuming a branch is still live.
   - Full deploy of a store/automation change, in order (2026-08-30): push to
     origin/master → in `/root/git/vibe-manager` `git pull --ff-only` (or reset
     to origin/master once its content is verified contained) and
