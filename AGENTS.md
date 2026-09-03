@@ -534,26 +534,23 @@ via /etc/nginx/.htpasswd).
   `secrets_encrypted: true`, and `tools` forced to `null` (the stored value
   `[]` means bare agent; `null` resolves the default exec toolset). Using
   `agent_profile_id` yields an agent with NO tools ├óŌé¼ŌĆØ don't.
-- **Per-task model selection**: the Manager picks a model per worker task.
-  Available models = the agent server's LLM profiles
-  (`GET /api/profiles`, proxied without secrets at
-  `GET /api/manager/llm-profiles` → {profiles: [{name, model}],
+- **Per-task model selection**: for manager-dispatched workers, use only
+  `gpt-6-astra` for high-effort work, `gpt-5.6-sol` for medium/default
+  work, and `gpt-5.6-terra` for low-effort work. Managers must not select or
+  recommend Anthropic profiles. The agent-server profile endpoint remains
+  available for the user-facing picker (`GET /api/profiles`, proxied without
+  secrets at `GET /api/manager/llm-profiles` → {profiles: [{name, model}],
   active_profile}). `POST /api/manager/conversations` accepts
   `llm_profile: <name>`: on create, app.py fetches the profile's full LLM
   config via `GET /api/profiles/<name>` with `X-Expose-Secrets: encrypted`
   (profile carries its OWN encrypted api_key) and swaps it into
   `agent_settings.llm`, preserving the settings llm's `usage_id`; on
-  follow-up it calls `POST /api/conversations/<id>/switch_profile` first
-  (so the manager can escalate a stuck worker to a stronger model). Unknown
-  names → 400 listing available profiles, validated BEFORE the worker
+  follow-up it calls `POST /api/conversations/<id>/switch_profile` first.
+  Unknown names → 400 listing available profiles, validated BEFORE the worker
   worktree is provisioned. The manager prompt's "Model selection" section
-  (automation/main.py `model_selection_instructions()`) inlines the live
-  profile list at prompt-build time and degrades to a self-serve
-  GET instruction if the vibe API is unreachable. Guidance is
-  capability-based (strongest ↔ gnarly work, default ↔ routine, cheapest ↔
-  chores) because profile names change. A model the user picked on the request
-  (see Request settings) overrides all of this. Tests:
-  `tests/test_llm_profiles.py`.
+  (automation/main.py `model_selection_instructions()`) defines the fixed
+  tiers. A model the user picked on the request (see Request settings)
+  overrides the manager's selection. Tests: `tests/test_llm_profiles.py`.
 - Auth keys are read at service start from `.session-key` / `.automation-key`
   in the repo root (falling back to env). These are extracted from the live
   agent-server process env; static copies go stale.
