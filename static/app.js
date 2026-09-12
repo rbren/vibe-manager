@@ -21,6 +21,7 @@ const state = {
   tickets: [],
   drawerTicketId: null,
   pollTimer: null,
+  workspaceTimer: null,
   automation: null,      // manager automation status for the selected workspace
   automationTimer: null,
   dragging: null,        // { id, status }
@@ -42,6 +43,7 @@ const STATUS_LABEL = {
   finished: "finished",
   verified: "verified",
 };
+const UNFINISHED_STATUSES = new Set(["pending", "in_progress", "needs_input"]);
 
 // Execution statuses in which a worker conversation has stopped acting: its
 // last action line is history, so the card shows a checkmark, not a pulse.
@@ -181,6 +183,28 @@ async function loadWorkspaces() {
     sel.appendChild(og);
   }
   sel.value = current || (localStorage.getItem("vibe.workspace") ?? "");
+  renderWorkspaceIndicators();
+}
+
+function renderWorkspaceIndicators() {
+  const wrap = $("#workspace-indicators");
+  wrap.replaceChildren();
+  for (const workspace of state.workspaces.selected) {
+    const count = Number(workspace.unfinished_count) || 0;
+    if (!count) continue;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "workspace-indicator";
+    button.dataset.path = workspace.path;
+    button.title = workspace.name;
+    button.textContent = String(count);
+    button.setAttribute(
+      "aria-label",
+      `${workspace.name}: ${count} unfinished ${count === 1 ? "card" : "cards"}`,
+    );
+    if (workspace.id === state.ws?.id) button.setAttribute("aria-current", "page");
+    wrap.appendChild(button);
+  }
 }
 
 /* URL scheme: /workspace/<name> deep-links to a workspace (SPA route). */
@@ -244,6 +268,13 @@ async function refreshBoard() {
     const data = await api(`/api/workspaces/${state.ws.id}/board`);
     state.ws = data.workspace;
     state.tickets = data.tickets;
+    const listed = state.workspaces.selected.find((workspace) => workspace.id === state.ws.id);
+    if (listed) {
+      listed.unfinished_count = state.tickets.filter(
+        (ticket) => UNFINISHED_STATUSES.has(ticket.status),
+      ).length;
+    }
+    renderWorkspaceIndicators();
     adoptWorkspacePrefs();
     renderBoard();
     renderSettings();
@@ -1146,6 +1177,10 @@ function ticketKeydown(submit) {
 
 function wire() {
   $("#workspace-select").addEventListener("change", (e) => selectWorkspace(e.target.value));
+  $("#workspace-indicators").addEventListener("click", (e) => {
+    const button = e.target.closest(".workspace-indicator");
+    if (button) selectWorkspace(button.dataset.path);
+  });
 
   $("#new-ticket-form").addEventListener("submit", (e) => { e.preventDefault(); submitTicket(); });
   $("#new-ticket-body").addEventListener("keydown", ticketKeydown(submitTicket));
@@ -1257,6 +1292,10 @@ async function init() {
     await selectWorkspace(path || "", { historyMode: "none" });
   });
   await loadWorkspaces();
+  state.workspaceTimer = setInterval(
+    () => loadWorkspaces().catch((error) => console.error(error)),
+    30000,
+  );
 
   const urlName = workspaceNameFromURL();
   const urlPath = urlName ? workspacePathFromName(urlName) : null;

@@ -48,6 +48,7 @@ SESSION_KEY = (ROOT / ".session-key").read_text().strip()
 AUTOMATION_KEY = (ROOT / ".automation-key").read_text().strip()
 
 STATUSES = ["pending", "in_progress", "needs_input", "finished"]
+UNFINISHED_STATUSES = ("pending", "in_progress", "needs_input")
 # Terminal state outside the main board; reached only via the verify endpoint.
 VERIFIED = "verified"
 
@@ -705,6 +706,17 @@ def list_workspaces():
         log.warning("agent-server workspace listing failed: %s", exc)
     with db() as conn:
         selected = [workspace_dict(r) for r in conn.execute("SELECT * FROM workspaces ORDER BY created_at")]
+        placeholders = ",".join("?" for _ in UNFINISHED_STATUSES)
+        unfinished = {
+            row["workspace_id"]: row["count"]
+            for row in conn.execute(
+                f"SELECT workspace_id, COUNT(*) AS count FROM tickets "
+                f"WHERE status IN ({placeholders}) GROUP BY workspace_id",
+                UNFINISHED_STATUSES,
+            )
+        }
+    for workspace in selected:
+        workspace["unfinished_count"] = unfinished.get(workspace["id"], 0)
     return {"available": available, "selected": selected, "canvas_base": CANVAS_BASE}
 
 
