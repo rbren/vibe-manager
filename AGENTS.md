@@ -246,6 +246,16 @@ via /etc/nginx/.htpasswd).
   "One conversation per ticket" rule in the manager prompt (automation/main.py
   item 4, replacing the old "Reuse old conversations when sensible"
   guidance). Tests: `tests/test_llm_profiles.py`.
+  - A follow-up prompt on that same conversation carries only the new user
+    request and any newly needed context/attachments; it never replays the
+    full ticket history already visible in the conversation. New conversation
+    prompts remain self-contained with all user entries.
+- **Report-back/information tickets**: when a worker completes a ticket that
+  says "report back", asks a question, or otherwise requests information, the
+  Manager always moves it to `needs_input` after the requested report arrives
+  — including in push-to-main mode — so the user reviews it rather than the
+  card being marked finished. Both prompt policies above are covered by
+  `tests/test_manager_prompt_policies.py`.
 - **Ticket titles**: tickets have a nullable `title` column, included in every
   ticket dict (board AND manager snapshot) and settable via the manager PATCH
   endpoint (`/api/manager/tickets/<id>`, trimmed; blank clears it). The SPA
