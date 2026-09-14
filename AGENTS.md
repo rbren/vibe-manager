@@ -13,10 +13,16 @@ checkout as part of deployment.
   during onboarding. Reference: DevinVinson/skills `canvas-extension-api`.
 - `extensions/kanban-manager/src/app.jsx`: React App, onboarding, backend
   configuration, consent, start/stop/repair, migration and runtime warnings.
+  Unknown readiness renders only loading/recheck, never onboarding. Publish
+  probe and migration status together; do not probe twice or trust cached install
+  hints. Older backends require the runtime-status fallback.
   React owns the lifecycle of the existing board interaction controller in
   `src/extension.js`; retain its behavior and scoped styles during refactors.
 - `src/api.js`: only `host.agentServer.request`, `/api/file/home` discovery and
   a fixed base64/JSON command bridge through `/api/bash/execute_bash_command`.
+  Browser data traffic still uses execute_bash: verified host API 1 / Agent
+  Server 1.46.0 lack a sidecar HTTP proxy. Removing it requires an authenticated
+  backend/deployment bridge; see README contract evidence, never guess a route.
   No file-API persistence, browser credential extraction, inferred backend
   origin, direct browser WebSocket or cross-origin sidecar fetch.
 - `app.py`: shared FastAPI board/settings/ticket/manager/chat API and SQLite
@@ -82,6 +88,9 @@ checkout as part of deployment.
 - `static/style.css` is the design source; build scopes it under `.vibe-ext`.
   Ten primary palettes, dark/light themes, neutral controls and lane hues remain.
   Use theme tokens and rem units; no global Canvas CSS or toast notifications.
+- Pass `/conversations/<encoded-id>` to Canvas navigate, never a backend-returned
+  absolute URL (React Router treats it as a relative path). Keep native link hrefs
+  and modified/middle-click behavior intact.
 - Conversations carry `workspace: {kind: LocalWorkspace, working_dir: PROJECT}`
   plus `workspace` and `viberole` tags. Workers get dedicated git worktrees;
   `worktree:false` prevents Agent Server rewriting their project association.
