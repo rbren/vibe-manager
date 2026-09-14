@@ -902,6 +902,16 @@ Operational notes for the extension:
 
 ## Canvas Extensions research (2026-05-21)
 
+- **Protocol re-verification (2026-09-14):** the current
+  `DevinVinson/skills/skills/canvas-extension-api` guidance and this instance's
+  Agent Server/SDK 1.46.0 still require exactly one self-contained
+  `extension.js` exporting `activate(host)`. React may run inside that bundle,
+  but installation provides no backend entrypoint, managed process lifecycle,
+  or app HTTP proxy. A FastAPI + SQLite migration therefore needs the documented
+  separately managed sidecar pattern (as in `canvas-apps/conversation-search-sidecar`)
+  plus an authenticated fixed-command bridge; confirm that architecture with the
+  user before replacing the current file-backed implementation.
+
 Investigated converting vibe-manager into a Canvas Extension (openhands
 v1.16.0 `feat: land the Canvas Extensions frontend`, 89dc8bd44). Findings,
 verified against source + live API probes on this host:
