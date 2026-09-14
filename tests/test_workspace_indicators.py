@@ -73,6 +73,29 @@ def test_workspace_list_counts_only_unfinished_cards():
     print("ok: workspace listing counts active statuses and excludes terminal cards")
 
 
+def test_spa_indicator_markup_and_behavior_contract():
+    html = (ROOT / "static" / "index.html").read_text()
+    script = (ROOT / "static" / "app.js").read_text()
+    styles = (ROOT / "static" / "style.css").read_text()
+    renderer = script.split("function renderWorkspaceIndicators()", 1)[1].split(
+        "/* URL scheme", 1
+    )[0]
+
+    assert html.index('id="workspace-indicators"') < html.index('id="workspace-select"')
+    assert "if (workspace.id === state.ws?.id) continue;" in renderer
+    assert 'button.dataset.accent = workspace.accent || DEFAULT_ACCENT;' in renderer
+    assert "button.title" not in renderer
+    assert 'tooltip.setAttribute("role", "tooltip")' in renderer
+    assert 'button.setAttribute("aria-describedby", tooltip.id)' in renderer
+    assert ".workspace-indicator-item:hover .workspace-indicator-tooltip" in styles
+    assert ".workspace-indicator:focus-visible + .workspace-indicator-tooltip" in styles
+    for accent in vibe_app.ACCENTS:
+        assert f'.workspace-indicator[data-accent="{accent}"]' in styles
+
+    print("ok: SPA badges exclude the active project and use visible, project-coloured tooltips")
+
+
 if __name__ == "__main__":
     test_workspace_list_counts_only_unfinished_cards()
+    test_spa_indicator_markup_and_behavior_contract()
     print("all workspace-indicator tests passed")

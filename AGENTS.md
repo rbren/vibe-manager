@@ -29,13 +29,16 @@ via /etc/nginx/.htpasswd).
     pickers (static/app.js and the extension) must stay in sync. The extension
     never had the `is_git` flag at all, so every candidate there was labelled
     "(not git)".
-  - **Unfinished-project indicators** (user request 2026-05-21): circles beside
-    the workspace picker show every selected project with at least one card in
+  - **Unfinished-project indicators** (user request 2026-05-21, corrected
+    2026-09-14): circles to the left of the workspace picker show every
+    non-active selected project with at least one card in
     pending/in_progress/needs_input; finished and verified are terminal and do
-    not count. The title tooltip is the project name and clicks go through the
-    existing `selectWorkspace`, preserving picker/localStorage/deep-link/chat
-    behavior. The SPA gets `unfinished_count` from `GET /api/workspaces` (one
-    SQL aggregate); the extension derives it read-only from each board with
+    not count. Each circle uses its source workspace's primary colour and has a
+    real hover/focus tooltip component with the project name; do not use the
+    native `title` attribute. Clicks go through the existing `selectWorkspace`,
+    preserving picker/localStorage/deep-link/chat behavior. The SPA gets
+    `unfinished_count` from `GET /api/workspaces` (one SQL aggregate); the
+    extension derives it read-only from each board with
     `Store.unfinishedCounts` rather than denormalizing into index.json and
     adding cross-writer risk. Both refresh inactive projects every 30s and
     update the active count on each board poll. Keep static/index.html,
