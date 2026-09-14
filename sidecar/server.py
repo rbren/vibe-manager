@@ -71,7 +71,7 @@ def add_routes(vibe, root, token, shutdown):
             install_legacy_cli(vibe, source, root)
             finish_cutover(vibe, root)
             return report
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError, httpx.HTTPError, httpx.InvalidURL) as exc:
             raise HTTPException(409, str(exc)) from exc
 
     @app.get('/api/manager/conversations/{conv_id}')

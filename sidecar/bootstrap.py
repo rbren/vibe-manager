@@ -33,6 +33,9 @@ def main():
         for key in ('agent_server', 'automation_api', 'canvas_base'):
             if config.get(key):
                 url = urlsplit(config[key])
+                # urlsplit defers validating malformed/out-of-range ports until access.
+                if url.port == 0:
+                    raise ValueError('Integration URL port must be positive')
                 if url.scheme not in ('http', 'https') or not url.hostname or url.username or url.password or url.query or url.fragment:
                     raise ValueError('Integration URLs must be explicit HTTP(S) endpoints without credentials')
         for key in ('session_key_file', 'automation_key_file'):

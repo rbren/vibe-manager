@@ -1,6 +1,7 @@
 """Real SQLite migration and authenticated sidecar HTTP tests; no service doubles."""
 import base64
 import concurrent.futures
+import hashlib
 import importlib
 import json
 import os
@@ -43,6 +44,17 @@ class SidecarTest(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_onboarding_rejects_invalid_ports_without_mutation(self):
+        payload = dict(action='install', confirmed=True, archive='',
+            sha256=hashlib.sha256(b'').hexdigest(),
+            integration={'agent_server': 'http://127.0.0.1:1800http://127.0.0.1:18000'})
+        result = subprocess.run([sys.executable, str(ROOT / 'sidecar/bootstrap.py'),
+            base64.b64encode(json.dumps(payload).encode()).decode()], cwd=self.home,
+            env={**os.environ, 'HOME': str(self.home)}, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.home / '.openhands').exists())
+        self.assertIn('port', json.loads(result.stdout)['error'].lower())
 
     def test_migration_idempotence_and_transaction(self):
         from sidecar.migrate import import_legacy
