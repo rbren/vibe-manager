@@ -13,20 +13,18 @@ checkout as part of deployment.
   during onboarding. Reference: DevinVinson/skills `canvas-extension-api`.
 - `extensions/kanban-manager/src/app.jsx`: React App, onboarding, backend
   configuration, consent, start/stop/repair, migration and runtime warnings.
-  Unknown readiness renders only loading/recheck, never onboarding. Publish
-  probe and migration status together; do not probe twice or trust cached install
-  hints. Older backends require the runtime-status fallback.
+  Unknown readiness renders only loading/recheck, never onboarding. HTTP runtime
+  includes safe installation metadata and migration state in one snapshot. Old
+  backends remain inspectable/repairable through explicit Backend setup.
   React owns the lifecycle of the existing board interaction controller in
   `src/extension.js`; retain its behavior and scoped styles during refactors.
-- `src/api.js`: only `host.agentServer.request`, `/api/file/home` discovery and
-  a fixed base64/JSON command bridge through `/api/bash/execute_bash_command`.
-  Browser data traffic still uses execute_bash: verified host API 1 / Agent
-  Server 1.46.0 lack a sidecar HTTP proxy. Removing it requires an authenticated
-  backend/deployment bridge; see README contract evidence, never guess a route.
-  Setup uploads the package in bounded chunks to private staging files before
-  SHA-256 verification; never embed the entire archive in a shell argument.
-  No file-API persistence, browser credential extraction, inferred backend
-  origin, direct browser WebSocket or cross-origin sidecar fetch.
+- `src/api.js`: data and startup readiness use only `host.agentServer.request`
+  at `/kanban-manager/api/...`, an explicitly provisioned deployment gateway.
+  Canvas supplies the selected backend's auth; no credential extraction or
+  origin inference. HTTP/auth/HTML failures never fall back to command data RPCs.
+  Only explicit setup/lifecycle and installation progress use `/api/file/home`
+  and fixed base64/JSON commands. Approved installs stage bounded chunks before
+  SHA-256 verification; no full-package shell argument or file-API persistence.
 - `app.py`: shared FastAPI board/settings/ticket/manager/chat API and SQLite
   transactions. `sidecar/server.py` is the production sidecar entrypoint: random
   loopback port, per-process bearer token, authenticated health/shutdown, chunked
@@ -67,8 +65,9 @@ checkout as part of deployment.
   repair, run `/etc/nginx/refresh-kanban-manager.py` as root to validate/reload
   nginx. No watcher is installed. Never print or commit the upstream include.
 - This is an explicitly provisioned deployment adapter, not a portable host API
-  capability. App v0.3.1 still uses the command bridge; frontend HTTP wiring is
-  a separate change. The standalone website/database remains separate.
+  capability. App/backend v0.3.2 require it for data. Select the nginx-facing URL
+  in Canvas backend settings, not a direct Agent Server/development port. The
+  standalone website/database remains separate.
 
 ## Migration and recovery
 
@@ -129,8 +128,9 @@ checkout as part of deployment.
 - `python tests/test_sidecar.py`: real migrations, SQLite concurrency, HTTP auth,
   binary uploads/range downloads, restart persistence, legacy CLI redirection.
 - Run each `tests/test_*.py` separately, setting `VIBE_STORE_DIR` to a temporary
-  directory. Tests set temporary DB/data paths; never copy credentials into the
-  worktree. Existing integration tests use the configured services where needed.
+  directory. Use synthetic `VIBE_SESSION_KEY=test-key` and
+  `VIBE_AUTOMATION_KEY=test-key` for the legacy HTTP fixture tests; never copy
+  real credentials into the worktree or send them to test services.
 - `cd extensions/kanban-manager && npm ci && npm run check` (set `CHROME_PATH` to
   a real Chrome binary). Includes artifact validation, real bridge/backend UI
   tests and Chromium Blob smoke. The minimal Canvas host substitute executes
