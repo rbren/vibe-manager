@@ -32,6 +32,8 @@ def package(destination: Path):
                 target = backend / source.relative_to(ROOT)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
+    (backend / 'tests').mkdir()
+    shutil.copy2(ROOT / 'tests/test_sidecar.py', backend / 'tests/test_sidecar.py')
     (destination / '.gitignore').write_text('node_modules/\ndist/\n__pycache__/\n*.pyc\n')
     print(destination)
 

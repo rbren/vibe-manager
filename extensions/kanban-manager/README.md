@@ -132,6 +132,7 @@ React effect and fully disposed on unmount. `src/store.js`, `live.js`,
 ```sh
 npm ci
 CHROME_PATH=/path/to/chrome npm run check
+python backend/tests/test_sidecar.py
 ```
 
 Build emits exactly one self-contained `dist/extension.js`, validates it, then

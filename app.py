@@ -860,8 +860,7 @@ def automation_status(ws_id: str):
     except httpx.HTTPError as exc:
         if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
             out["missing"] = True
-        else:
-            out["error"] = f"automation backend unreachable: {exc}"
+        out["error"] = f"automation backend unreachable: {exc}"
     conv_id = ws.get("manager_conversation_id")
     if conv_id:
         try:
