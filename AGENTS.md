@@ -23,6 +23,8 @@ checkout as part of deployment.
   Browser data traffic still uses execute_bash: verified host API 1 / Agent
   Server 1.46.0 lack a sidecar HTTP proxy. Removing it requires an authenticated
   backend/deployment bridge; see README contract evidence, never guess a route.
+  Setup uploads the package in bounded chunks to private staging files before
+  SHA-256 verification; never embed the entire archive in a shell argument.
   No file-API persistence, browser credential extraction, inferred backend
   origin, direct browser WebSocket or cross-origin sidecar fetch.
 - `app.py`: shared FastAPI board/settings/ticket/manager/chat API and SQLite
