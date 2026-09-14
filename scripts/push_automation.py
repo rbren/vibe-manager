@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Package the automation modules and push them to the automation backend.
 
-Talks only to the automation API and the native JSON store, so it works
-without the legacy FastAPI service running. Stdlib only.
+Reads the active board through the sidecar (or unmigrated legacy store).
+Preserves paused automations. Stdlib only.
 
   python3 scripts/push_automation.py            # every workspace with an automation
   python3 scripts/push_automation.py dj-station # one workspace, by name or id
@@ -26,6 +26,11 @@ AUTOMATION_API = os.environ.get("VIBE_AUTOMATION_API", "http://127.0.0.1:18001/a
 AGENT_SERVER = os.environ.get("VIBE_AGENT_SERVER", "http://127.0.0.1:18000")
 CANVAS_BASE = os.environ.get("VIBE_CANVAS_BASE", "http://127.0.0.1:8000")
 STORE = Path(os.environ.get("VIBE_STORE_ROOT", Path.home() / ".openhands/vibe-manager"))
+
+
+sys.path.insert(0, str(ROOT / "automation"))
+os.environ.setdefault("VIBE_STORE_DIR", str(STORE))
+import vibestore  # noqa: E402 - standalone script with sibling module
 
 
 def api_key() -> str:
@@ -61,6 +66,8 @@ def build_tarball(ws: dict) -> bytes:
             "workspace_name": ws["name"],
             "agent_server": AGENT_SERVER,
             "canvas_base": CANVAS_BASE,
+            "store_dir": str(STORE),
+            "sidecar_root": str(vibestore.sidecar_root()) if vibestore.sidecar_root() else None,
         },
         indent=2,
     ).encode()
@@ -77,7 +84,7 @@ def build_tarball(ws: dict) -> bytes:
 
 
 def main(argv: list[str]) -> int:
-    index = json.loads((STORE / "index.json").read_text())
+    index = vibestore.read_index()
     wanted = set(argv)
     targets = [
         w for w in index["workspaces"]
@@ -96,7 +103,7 @@ def main(argv: list[str]) -> int:
             ctype="application/gzip",
         )
         request("PATCH", f"/v1/{ws['automation_id']}", body={
-            "tarball_path": up["tarball_path"], "enabled": True,
+            "tarball_path": up["tarball_path"],
         })
         print(f"pushed {len(MODULES) + 1} files ({len(tarball)} B) -> {ws['name']} ({ws['automation_id']})")
     return 0

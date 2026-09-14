@@ -20,7 +20,7 @@ import tarfile
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 import httpx
@@ -44,8 +44,15 @@ AUTOMATION_API = os.environ.get("VIBE_AUTOMATION_API", "http://127.0.0.1:18001/a
 VIBE_API = os.environ.get("VIBE_SELF_URL", "http://127.0.0.1:18300")
 CANVAS_BASE = os.environ.get("VIBE_CANVAS_BASE", "https://canvas.rbren.io")
 
-SESSION_KEY = (ROOT / ".session-key").read_text().strip()
-AUTOMATION_KEY = (ROOT / ".automation-key").read_text().strip()
+def configured_key(env: str, filename: str) -> str:
+    if env in os.environ:
+        return os.environ[env]
+    path = Path(os.environ.get(env + "_FILE", str(ROOT / filename)))
+    return path.read_text().strip() if path.is_file() else ""
+
+
+SESSION_KEY = configured_key("VIBE_SESSION_KEY", ".session-key")
+AUTOMATION_KEY = configured_key("VIBE_AUTOMATION_KEY", ".automation-key")
 
 STATUSES = ["pending", "in_progress", "needs_input", "finished"]
 UNFINISHED_STATUSES = ("pending", "in_progress", "needs_input")
@@ -71,7 +78,20 @@ DEFAULT_TICKET_BUDGET = 10.0
 THEMES = ["dark", "light"]
 DEFAULT_THEME = "dark"
 
-app = FastAPI(title="Vibe Work Manager")
+@asynccontextmanager
+async def lifespan(application):
+    await _capture_event_loop()
+    try:
+        yield
+    finally:
+        tasks = [t for t in _activity_tasks.values() if isinstance(t, asyncio.Task)]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        _activity_tasks.clear()
+
+
+app = FastAPI(title="Kanban Manager", lifespan=lifespan)
 
 # The Canvas Extension build of the SPA (extensions/kanban-manager) runs on the
 # Canvas origin, so its API calls are cross-origin. Allow only the Canvas
@@ -95,7 +115,8 @@ app.add_middleware(
 # --------------------------------------------------------------------------- db
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -106,6 +127,7 @@ def _connect() -> sqlite3.Connection:
 def db():
     conn = _connect()
     try:
+        conn.execute("BEGIN IMMEDIATE")
         yield conn
         conn.commit()
     finally:
@@ -235,7 +257,6 @@ _activity_tasks: dict[str, object] = {}  # conv_id -> asyncio.Task (or True plac
 _loop: asyncio.AbstractEventLoop | None = None
 
 
-@app.on_event("startup")
 async def _capture_event_loop() -> None:
     global _loop
     _loop = asyncio.get_running_loop()
@@ -728,15 +749,20 @@ def select_workspace(req: SelectWorkspace):
     ws_id = hashlib.sha1(path.encode()).hexdigest()[:12]
     name = Path(path).name
     with db() as conn:
-        row = conn.execute("SELECT * FROM workspaces WHERE id=?", (ws_id,)).fetchone()
+        row = conn.execute("SELECT * FROM workspaces WHERE path=?", (path,)).fetchone()
+        if row:
+            ws_id = row["id"]
         if not row:
             conn.execute(
                 "INSERT INTO workspaces(id, path, name, created_at) VALUES(?,?,?,?)",
                 (ws_id, path, name, time.time()),
             )
+            if os.environ.get("VIBE_SIDECAR_ROOT"):
+                conn.execute("UPDATE workspaces SET max_concurrent=2, push_mode='main' WHERE id=?", (ws_id,))
             conn.commit()
             row = conn.execute("SELECT * FROM workspaces WHERE id=?", (ws_id,)).fetchone()
-    automation_id = ensure_manager_automation(ws_id)
+    automation_id = (row["automation_id"] if os.environ.get("VIBE_SIDECAR_ROOT")
+                     else ensure_manager_automation(ws_id))
     with db() as conn:
         row = conn.execute("SELECT * FROM workspaces WHERE id=?", (ws_id,)).fetchone()
     d = workspace_dict(row)
@@ -832,7 +858,10 @@ def automation_status(ws_id: str):
                     streak += 1
                 out["consecutive_failures"] = streak
     except httpx.HTTPError as exc:
-        out["error"] = f"automation backend unreachable: {exc}"
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
+            out["missing"] = True
+        else:
+            out["error"] = f"automation backend unreachable: {exc}"
     conv_id = ws.get("manager_conversation_id")
     if conv_id:
         try:
@@ -1071,6 +1100,8 @@ def _llm_profiles() -> dict:
 
     Shape: {"profiles": [{"name", "model", ...}], "active_profile": <name>}.
     """
+    if not AGENT_SERVER or not SESSION_KEY:
+        return {"profiles": [], "active_profile": None}
     r = httpx.get(
         f"{AGENT_SERVER}/api/profiles",
         headers={"X-Session-API-Key": SESSION_KEY},
@@ -1276,6 +1307,8 @@ def manager_start_conversation(req: StartConversation):
     Centralizes agent config so callers (automation script, Manager agent)
     get the active LLM profile + default exec tools without handling secrets.
     """
+    if not AGENT_SERVER or not SESSION_KEY:
+        raise HTTPException(409, "Configure Agent Server URL and server-side credentials in Backend setup")
     headers = {"X-Session-API-Key": SESSION_KEY, "Content-Type": "application/json"}
     prompt = req.prompt
     llm_profile = ticket_llm_profile(req.ticket_id) or req.llm_profile
@@ -1394,7 +1427,7 @@ def manager_chat_skill(ws: dict) -> str:
         if ws["push_mode"] == "pr"
         else "push to the default branch directly"
     )
-    return f"""{MANAGER_CHAT_MARKER}
+    skill = f"""{MANAGER_CHAT_MARKER}
 You are the **Vibe Manager** for the project at `{path}` (workspace id `{ws_id}`), talking to the user in a chat window on their kanban board. Replies land in a small chat panel: keep them short, plain and conversational.
 
 ## What you do here
@@ -1426,6 +1459,20 @@ Then, with `-H "X-Session-API-Key: <session_api_key>"`:
 
 ## Right now
 Read `AGENTS.md` and the board snapshot, then greet the user in ONE sentence that says where the board stands (e.g. "3 queued, 1 agent working"). Then wait — answer what they ask, record what they request."""
+
+    if os.environ.get("VIBE_SIDECAR_ROOT"):
+        from automation import vibestore
+        cli = vibestore.install_cli(ws_id, path)
+        begin = skill.index("## Reading the board")
+        end = skill.index("## Right now")
+        skill = skill[:begin] + f"""## Reading the board and conversations
+Use the authenticated manager CLI; never read credential files or write the database directly.
+- `python3 {cli} snapshot` — full board, settings, ticket history, attachments and worker status.
+- `python3 {cli} conversation <conversation_id> --final-response` — worker status and final report.
+The cron manager owns dispatch; this chat only reads the board.
+
+""" + skill[end:]
+    return skill
 
 
 def _workspace(ws_id: str) -> dict:
@@ -1632,6 +1679,7 @@ def build_manager_tarball(ws: dict) -> bytes:
             "workspace_path": ws["path"],
             "workspace_name": ws["name"],
             "vibe_api": VIBE_API,
+            "sidecar_root": os.environ.get("VIBE_SIDECAR_ROOT"),
             "agent_server": AGENT_SERVER,
             "canvas_base": CANVAS_BASE,
         },
@@ -1661,7 +1709,10 @@ def ensure_manager_automation(ws_id: str) -> str | None:
     try:
         with httpx.Client(base_url=AUTOMATION_API, headers=_automation_headers(), timeout=30) as client:
             existing = client.get("/v1", params={"limit": 100}).json().get("automations", [])
-            existing_id = next((a["id"] for a in existing if a.get("name") == name), None)
+            existing_id = ws.get("automation_id")
+            if existing_id and client.get(f"/v1/{existing_id}").status_code == 404:
+                existing_id = None
+            existing_id = existing_id or next((a["id"] for a in existing if a.get("name") == name), None)
 
             tarball = build_manager_tarball(ws)
             up = client.post(

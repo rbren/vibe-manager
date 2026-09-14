@@ -5,3 +5,6 @@ __pycache__/
 data/
 .session-key
 .automation-key
+
+*.db.bak.*
+.publication/

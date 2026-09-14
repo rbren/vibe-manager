@@ -70,9 +70,8 @@ export const BOARD_MARKUP = `
   <section id="api-setup" hidden>
     <div class="empty-inner">
       <p class="eyebrow">Board unavailable</p>
-      <h1>Can't reach the agent server</h1>
-      <p class="empty-copy">The board is stored on the agent server this Canvas backend is
-         connected to, so it needs to be running.</p>
+      <h1>Can't reach the Kanban backend</h1>
+      <p class="empty-copy">Open Backend setup to check the sidecar. Your SQLite board is kept on the selected Agent Server.</p>
       <p class="api-setup-error" id="api-setup-error" hidden></p>
       <button type="button" id="api-retry">Retry</button>
     </div>
