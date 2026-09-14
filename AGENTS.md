@@ -54,6 +54,22 @@ checkout as part of deployment.
   Canvas JSON store. Do not overwrite or silently merge these databases; retain
   the standalone database/site unless an explicit separate cutover is requested.
 
+## Instance-specific HTTP gateway
+
+- `https://canvas.rbren.io/kanban-manager/api/...` now proxies the local sidecar;
+  `/kanban-manager` and `/kanban-manager/` return authenticated health JSON.
+  Nginx validates `X-Session-API-Key` using Agent Server's protected
+  `/api/file/home` (NOT public `/server_info`), strips the client key/cookies and
+  injects the private sidecar bearer. Only the runtime bridge's API allowlist is
+  exposed; credential-export and internal shutdown routes stay inaccessible.
+- Config: `/etc/nginx/snippets/kanban-manager.conf`; the root-only upstream
+  include holds the current private port/token. After each sidecar restart or
+  repair, run `/etc/nginx/refresh-kanban-manager.py` as root to validate/reload
+  nginx. No watcher is installed. Never print or commit the upstream include.
+- This is an explicitly provisioned deployment adapter, not a portable host API
+  capability. App v0.3.1 still uses the command bridge; frontend HTTP wiring is
+  a separate change. The standalone website/database remains separate.
+
 ## Migration and recovery
 
 - `sidecar/migrate.py` imports the active legacy store
