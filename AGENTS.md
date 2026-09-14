@@ -100,6 +100,7 @@ checkout as part of deployment.
 - Preserve workspace picker names-only, unfinished-project circles, URL deep
   links, keyboard drawer controls, 25 MiB attachments, spend/model/action chips,
   max agents, request agent/budget settings, manager start/stop/trigger and chat.
+  Do not restore the obsolete top backend connected/setup status strip.
 - All preferences are workspace fields. Browser storage holds only paint/route
   hints, namespaced by backend; legacy hints are read for continuity.
 - `static/style.css` is the design source; build scopes it under `.vibe-ext`.
