@@ -49,7 +49,7 @@ def test_report_back_and_information_tickets_wait_for_user():
     assert "report back" in prompt.lower()
     assert "asks for information" in prompt.lower()
     assert "status needs_input" in prompt
-    assert "even in push-to-main mode" in prompt
+    assert "even in direct-push mode" in prompt
     assert "do not mark it finished" in prompt.lower()
 
 
@@ -62,7 +62,19 @@ def test_same_ticket_followups_do_not_replay_history():
     assert "One conversation per ticket" in prompt
 
 
+def test_delivery_discovers_remote_default_and_tools():
+    module = load_automation()
+    for mode in ("main", "pr"):
+        prompt = module.build_manager_prompt({"max_concurrent": 2, "push_mode": mode}, [])
+        assert "git ls-remote --symref origin HEAD" in prompt
+        assert "git fetch origin" in prompt and "rebase" in prompt
+        assert "default branch (main)" not in prompt and "origin/main" not in prompt
+        assert "auto-injected" not in prompt and "gh CLI is available" not in prompt
+        assert "available" in prompt and "credentials" in prompt
+
+
 if __name__ == "__main__":
     test_report_back_and_information_tickets_wait_for_user()
     test_same_ticket_followups_do_not_replay_history()
+    test_delivery_discovers_remote_default_and_tools()
     print("all manager prompt policy tests passed")

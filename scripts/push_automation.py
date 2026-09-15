@@ -5,7 +5,7 @@ Reads the active board through the sidecar (or unmigrated legacy store).
 Preserves paused automations. Stdlib only.
 
   python3 scripts/push_automation.py            # every workspace with an automation
-  python3 scripts/push_automation.py dj-station # one workspace, by name or id
+  python3 scripts/push_automation.py PROJECT_NAME # one workspace, by name or id
 """
 
 from __future__ import annotations
@@ -22,9 +22,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MODULES = ("main.py", "vibestore.py", "vibectl.py")
-AUTOMATION_API = os.environ.get("VIBE_AUTOMATION_API", "http://127.0.0.1:18001/api/automation")
-AGENT_SERVER = os.environ.get("VIBE_AGENT_SERVER", "http://127.0.0.1:18000")
-CANVAS_BASE = os.environ.get("VIBE_CANVAS_BASE", "http://127.0.0.1:8000")
 STORE = Path(os.environ.get("VIBE_STORE_ROOT", Path.home() / ".openhands/vibe-manager"))
 
 
@@ -33,15 +30,28 @@ os.environ.setdefault("VIBE_STORE_DIR", str(STORE))
 import vibestore  # noqa: E402 - standalone script with sibling module
 
 
+root = vibestore.sidecar_root()
+integration = json.loads((root / "integration.json").read_text()) if root else {}
+AUTOMATION_API = os.environ.get("VIBE_AUTOMATION_API") or integration.get("automation_api", "")
+AGENT_SERVER = (os.environ.get("VIBE_AGENT_SERVER") or os.environ.get("AGENT_SERVER_URL")
+                or integration.get("agent_server", ""))
+CANVAS_BASE = os.environ.get("VIBE_CANVAS_BASE", integration.get("canvas_base", ""))
+
+
 def api_key() -> str:
-    key = os.environ.get("OPENHANDS_AUTOMATION_API_KEY")
+    key = os.environ.get("VIBE_AUTOMATION_KEY") or os.environ.get("OPENHANDS_AUTOMATION_API_KEY")
     if key:
         return key
-    return (ROOT / ".automation-key").read_text().strip()
+    filename = os.environ.get("VIBE_AUTOMATION_KEY_FILE") or integration.get("automation_key_file")
+    if filename:
+        return Path(filename).expanduser().read_text().strip()
+    raise RuntimeError("Configure server-side automation credentials or VIBE_AUTOMATION_KEY_FILE")
 
 
 def request(method: str, path: str, *, body=None, content=None, ctype=None):
-    url = f"{AUTOMATION_API}{path}"
+    if not AUTOMATION_API:
+        raise RuntimeError("Configure VIBE_AUTOMATION_API or the sidecar integration")
+    url = f"{AUTOMATION_API.rstrip('/')}{path}"
     data = content if content is not None else (json.dumps(body).encode() if body is not None else None)
     headers = {"X-Session-API-Key": api_key()}
     if ctype:
@@ -66,6 +76,8 @@ def build_tarball(ws: dict) -> bytes:
             "workspace_name": ws["name"],
             "agent_server": AGENT_SERVER,
             "canvas_base": CANVAS_BASE,
+            "session_key_file": os.environ.get("VIBE_SESSION_KEY_FILE") or integration.get("session_key_file"),
+            "manager_skill_file": os.environ.get("VIBE_MANAGER_SKILL_FILE"),
             "store_dir": str(STORE),
             "sidecar_root": str(vibestore.sidecar_root()) if vibestore.sidecar_root() else None,
         },

@@ -1,7 +1,7 @@
 """Model-selection (LLM profile) tests — plain script, no pytest.
 
 Run with the service venv:
-    /root/git/vibe-manager/.venv/bin/python tests/test_llm_profiles.py
+    python3 tests/test_llm_profiles.py
 Stubs the agent server via VIBE_AGENT_SERVER so nothing live is touched.
 Covers: the /api/manager/llm-profiles proxy, agent_settings llm injection for
 a chosen profile (with usage_id preservation), unknown-profile 400s, and the
@@ -14,11 +14,13 @@ import importlib.util
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import quote
 
 TMP = Path(tempfile.mkdtemp(prefix="vibe-llmprof-test-"))
 os.environ["VIBE_DB_PATH"] = str(TMP / "vibe.db")
@@ -26,7 +28,7 @@ os.environ["VIBE_DATA_DIR"] = str(TMP / "data")
 
 PROFILES = {
     "profiles": [
-        {"name": "gpt-6-astra", "model": "openai/gpt-6-astra", "api_key_set": True},
+        {"name": "gpt-6-astra", "model": "openai/gpt-6-astra", "api_key_set": True, "api_key": "must-not-leak", "config": {"secret": "must-not-leak"}},
         {"name": "gpt-5.6-sol", "model": "openai/gpt-5.6-sol", "api_key_set": True},
         {"name": "gpt-5.6-terra", "model": "openai/gpt-5.6-terra", "api_key_set": True},
         {"name": "legacy-anthropic", "model": "anthropic/claude-opus-5", "api_key_set": True},
@@ -54,6 +56,8 @@ class StubAgentServer(BaseHTTPRequestHandler):
             body = PROFILES
         elif self.path == "/api/profiles/gpt-5.6-sol":
             body = {"name": "gpt-5.6-sol", "config": dict(SOL_CONFIG)}
+        elif self.path == "/api/profiles/" + quote("custom alias #?", safe=""):
+            body = {"name": "custom alias #?", "config": {**SOL_CONFIG, "model": "other-provider/custom"}}
         elif self.path.startswith("/api/profiles/"):
             self.send_response(404)
             self.end_headers()
@@ -97,6 +101,7 @@ def test_llm_profiles_endpoint_proxies_agent_server():
     assert [p["name"] for p in d["profiles"]] == [
         "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "legacy-anthropic",
     ]
+    assert "must-not-leak" not in json.dumps(d)
     assert "gAAAAA" not in json.dumps(d)  # never leaks secrets
     print("ok: /api/manager/llm-profiles proxies the agent server profile list")
 
@@ -159,19 +164,43 @@ def _load_automation(agent_server: str):
     return mod
 
 
-def test_manager_prompt_enforces_gpt_effort_tiers():
+def test_manager_prompt_discovers_profiles():
     mod = _load_automation("http://127.0.0.1:1")
     ws = {"max_concurrent": 2, "push_mode": "main"}
     prompt = mod.build_manager_prompt(ws, [])
     assert "## Model selection for workers" in prompt
-    assert "`gpt-6-astra` → high effort" in prompt
-    assert "`gpt-5.6-sol` → medium/default effort" in prompt
-    assert "`gpt-5.6-terra` → low effort" in prompt
-    assert "Do not select or recommend Anthropic profiles" in prompt
-    assert "legacy-anthropic" not in prompt
-    # Dispatch goes through the CLI now, so the model is a flag, not a field.
+    assert f"{mod.VIBECTL} profiles" in prompt
+    assert "high effort" in prompt and "low effort" in prompt
+    assert "active default" in prompt and "omit `--profile`" in prompt
+    assert "never invent" in prompt.lower()
+    assert "user's choice wins" in prompt.lower()
+    assert "gpt-" not in prompt and "Anthropic" not in prompt
     assert "--profile" in prompt
-    print("ok: manager prompt enforces GPT high/medium/low tiers")
+    print("ok: manager discovers live profiles without provider-specific tiers")
+
+
+def test_cli_discovers_arbitrary_and_changing_profiles():
+    mod = _load_automation(os.environ["VIBE_AGENT_SERVER"])
+    listed = mod.vibestore.llm_profiles()
+    assert listed == vibe_app._llm_profiles()
+    assert "must-not-leak" not in json.dumps(listed)
+    original = json.loads(json.dumps(PROFILES))
+    try:
+        PROFILES.update(profiles=[{"name": "custom / local alias", "model": "another-provider/model"}],
+                        active_profile="custom / local alias")
+        result = subprocess.run([sys.executable, mod.VIBECTL, "profiles"],
+                                capture_output=True, text=True, check=True)
+        assert json.loads(result.stdout) == PROFILES
+        PROFILES.update(profiles=[], active_profile=None)
+        assert mod.vibestore.llm_profiles() == PROFILES
+    finally:
+        PROFILES.update(original)
+
+
+def test_profile_names_are_encoded_as_path_segments():
+    mod = _load_automation(os.environ["VIBE_AGENT_SERVER"])
+    assert vibe_app._agent_settings_payload("custom alias #?")["llm"]["model"] == "other-provider/custom"
+    assert mod.vibestore.agent_settings_payload("custom alias #?")["llm"]["model"] == "other-provider/custom"
 
 
 def test_manager_prompt_note_style_rule():
@@ -204,7 +233,9 @@ if __name__ == "__main__":
     test_agent_settings_default_untouched()
     test_agent_settings_profile_injection()
     test_agent_settings_unknown_profile_400()
-    test_manager_prompt_enforces_gpt_effort_tiers()
+    test_manager_prompt_discovers_profiles()
+    test_cli_discovers_arbitrary_and_changing_profiles()
+    test_profile_names_are_encoded_as_path_segments()
     test_manager_prompt_note_style_rule()
     test_manager_prompt_one_conversation_per_ticket()
     print("all llm profile tests passed")

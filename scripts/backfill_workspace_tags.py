@@ -4,8 +4,7 @@
 The canvas UI groups conversations by `selected_workspace`, falling back to
 the `workspace` conversation tag; conversations created before app.py tagged
 them show under "no workspace". This retro-tags every ticket conversation and
-manager conversation for ALL workspaces in the DB (vibe-manager, dj-station,
-...). Idempotent; stdlib-only. Run from the repo root:
+manager conversation for ALL workspaces in the DB. Idempotent; stdlib-only. Run from the repo root:
 
     python3 scripts/backfill_workspace_tags.py
 """
@@ -16,9 +15,11 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-AGENT_SERVER = os.environ.get("VIBE_AGENT_SERVER", "http://127.0.0.1:18000")
+AGENT_SERVER = os.environ.get("VIBE_AGENT_SERVER", os.environ.get("AGENT_SERVER_URL", "")).rstrip("/")
 DB_PATH = os.environ.get("VIBE_DB_PATH", str(ROOT / "vibe.db"))
-SESSION_KEY = (ROOT / ".session-key").read_text().strip()
+SESSION_KEY = os.environ.get("VIBE_SESSION_KEY") or os.environ.get("SESSION_API_KEY") or os.environ.get("OH_SESSION_API_KEYS_0", "")
+if os.environ.get("VIBE_SESSION_KEY_FILE"):
+    SESSION_KEY = Path(os.environ["VIBE_SESSION_KEY_FILE"]).expanduser().read_text().strip()
 
 
 def api(path: str, method: str = "GET", body: dict | None = None) -> dict:
@@ -32,6 +33,8 @@ def api(path: str, method: str = "GET", body: dict | None = None) -> dict:
 
 
 def main() -> None:
+    if not AGENT_SERVER or not SESSION_KEY:
+        raise SystemExit("Configure VIBE_AGENT_SERVER and server-side session credentials")
     conn = sqlite3.connect(DB_PATH)
     ws_paths = {r[0]: r[1] for r in conn.execute("SELECT id, path FROM workspaces")}
     targets: dict[str, tuple[str, str]] = {}  # conv_id -> (workspace path, role)

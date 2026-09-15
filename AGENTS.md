@@ -1,7 +1,7 @@
 # Kanban Manager
 
 Agent dispatch board for OpenHands Agent Canvas. Source repository:
-`rbren/vibe-manager`; standalone App publication: `DevinVinson/canvas-apps/kanban-manager`.
+`rbren/vibe-manager`; standalone App publication: `OpenHands/canvas-apps/kanban-manager`.
 Work only in the conversation's assigned worktree; never update the original
 checkout as part of deployment.
 
@@ -52,22 +52,28 @@ checkout as part of deployment.
   Canvas JSON store. Do not overwrite or silently merge these databases; retain
   the standalone database/site unless an explicit separate cutover is requested.
 
-## Instance-specific HTTP gateway
+## Portability and local policy
 
-- `https://canvas.rbren.io/kanban-manager/api/...` now proxies the local sidecar;
-  `/kanban-manager` and `/kanban-manager/` return authenticated health JSON.
-  Nginx validates `X-Session-API-Key` using Agent Server's protected
-  `/api/file/home` (NOT public `/server_info`), strips the client key/cookies and
-  injects the private sidecar bearer. Only the runtime bridge's API allowlist is
-  exposed; credential-export and internal shutdown routes stay inaccessible.
-- Config: `/etc/nginx/snippets/kanban-manager.conf`; the root-only upstream
-  include holds the current private port/token. After each sidecar restart or
-  repair, run `/etc/nginx/refresh-kanban-manager.py` as root to validate/reload
-  nginx. No watcher is installed. Never print or commit the upstream include.
-- This is an explicitly provisioned deployment adapter, not a portable host API
-  capability. App/backend v0.3.2 require it for data. Select the nginx-facing URL
-  in Canvas backend settings, not a direct Agent Server/development port. The
-  standalone website/database remains separate.
+- Generic manager prompts discover profiles through `vibectl.py profiles`, select
+  by capability/cost/effort, and preserve explicit user choices. No provider or
+  profile allowlist belongs in published source. Empty/unknown discovery uses the
+  active default for new workers and retains the current model for follow-ups.
+- `automation.vibestore.manager_skill_prompt` loads optional operator context
+  from `<sidecar-root>/skills/manager/SKILL.md` (default App data root), or
+  `VIBE_MANAGER_SKILL_FILE`; empty override disables it. Only manager/manager_chat
+  creation loads it, not workers or follow-up messages. Explicit unreadable paths fail. Local skill
+  text is never packaged or uploaded in automation tarballs. Keep secrets out.
+- This instance's model preferences and HTTP gateway/deployment runbook live in
+  that private local skill. Read it when deploying here. Other installations
+  provide their own gateway adapter; never infer its hostname, ports or auth.
+- Service URLs and credential paths are explicit backend configuration. CLI
+  configs carry URLs/paths, not keys. Profile discovery exposes name/model only;
+  settings/profile credentials remain backend-only. Conversation summaries use
+  the shared allowlisted API; manager chat never fetches credential exports.
+- Persisted `push_mode="main"` is a compatibility value meaning direct push to
+  the actual remote default branch, not a branch named main. Discover the
+  remote HEAD at delivery time. Operator-rendered nginx/systemd examples are
+  source-only, not installed by onboarding or published with the App.
 
 ## Migration and recovery
 
@@ -116,8 +122,7 @@ checkout as part of deployment.
   and include new context, not its whole history. Manager-chat has its own
   `manager_chat` role, records requests under one `## Manager` section in project
   AGENTS.md, and never dispatches workers or claims the cron manager slot.
-- User-selected models win. Manager choices: gpt-6-astra high effort,
-  gpt-5.6-sol default/medium, gpt-5.6-terra low effort. Budget stops occur once per
+- User-selected models win. Budget stops occur once per
   conversation; manager comments never count as new user requests. Failed manager
   retries are capped at three per unchanged fingerprint.
 - Manager notes are status-only one-liners (except deferral reasons/questions).
@@ -132,6 +137,8 @@ checkout as part of deployment.
   directory. Use synthetic `VIBE_SESSION_KEY=test-key` and
   `VIBE_AUTOMATION_KEY=test-key` for the legacy HTTP fixture tests; never copy
   real credentials into the worktree or send them to test services.
+  `tests/test_portability.py` checks isolated defaults, local skill loading and
+  package boundaries; rebuild the checked-in bundle before this test.
 - `cd extensions/kanban-manager && npm ci && npm run check` (set `CHROME_PATH` to
   a real Chrome binary). Includes artifact validation, real bridge/backend UI
   tests and Chromium Blob smoke. The minimal Canvas host substitute executes

@@ -1,0 +1,19 @@
+# Operator-rendered standalone-service example, not installed by the Canvas App.
+# Substitute every @...@ value; configure URLs, DB/data and credential paths in APP_ENV_FILE.
+[Unit]
+Description=Vibe work manager (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@APP_USER@
+WorkingDirectory=@APP_DIR@
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=@APP_ENV_FILE@
+ExecStart=@APP_DIR@/.venv/bin/uvicorn app:app --host 127.0.0.1 --port @APP_PORT@
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

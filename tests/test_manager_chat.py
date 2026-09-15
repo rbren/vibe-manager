@@ -1,7 +1,7 @@
 """'Talk to the manager' chat tests — plain script, no pytest.
 
 Run with the service venv:
-    /root/git/vibe-manager/.venv/bin/python tests/test_manager_chat.py
+    python3 tests/test_manager_chat.py
 Stubs the agent server via VIBE_AGENT_SERVER and uses a temp DB via
 VIBE_DB_PATH, so neither the live board nor real conversations are touched.
 
@@ -127,7 +127,8 @@ def test_skill_prompt():
     # (b) knows how to read the board and the conversations on it
     assert "/api/manager/workspaces/ws123/snapshot" in skill
     assert "/api/workspaces/ws123/automation" in skill
-    assert "/api/manager/agent-credentials" in skill
+    assert "/api/manager/agent-credentials" not in skill
+    assert "/api/manager/conversations/<conversation_id>" in skill
     assert "execution_status" in skill
     assert "/root/git/foo" in skill
     # dispatching stays with the cron manager
@@ -159,6 +160,57 @@ def test_start_chat():
             "SELECT manager_conversation_id FROM workspaces WHERE id=?", (ws_id,)
         ).fetchone()
     assert row["manager_conversation_id"] is None
+
+
+def test_local_skill_reaches_only_manager_roles():
+    skill = TMP / "manager SKILL.md"
+    skill.write_text("---\nname: test-manager\ndescription: Test local policy\n---\nLOCAL_POLICY_SENTINEL")
+    previous = os.environ.get("VIBE_MANAGER_SKILL_FILE")
+    os.environ["VIBE_MANAGER_SKILL_FILE"] = str(skill)
+    os.environ["AGENT_SERVER_URL"] = os.environ["VIBE_AGENT_SERVER"]
+    try:
+        ws_id, ws_path = seed_workspace()
+        for legacy in (False, True):
+            for role in ("manager", "manager_chat", "worker"):
+                created.clear()
+                prompt = vibe_app.MANAGER_CHAT_MARKER + "\nTest role"
+                if legacy:
+                    vibe_app.vibestore.start_conversation(ws_path, prompt, role=role, worktree=False)
+                else:
+                    response = client.post("/api/manager/conversations", json={
+                        "working_dir": ws_path, "prompt": prompt, "role": role, "worktree": False,
+                    })
+                    assert response.status_code == 200, response.text
+                text = created[-1]["initial_message"]["content"][0]["text"]
+                assert text.startswith(vibe_app.MANAGER_CHAT_MARKER)
+                assert ("LOCAL_POLICY_SENTINEL" in text) == (role != "worker")
+                if role != "worker":
+                    assert "explicit user model choices" in text
+                if legacy:
+                    vibe_app.vibestore.start_conversation(ws_path, "Follow-up only", role=role,
+                                                         conversation_id=CONV_ID, worktree=False)
+                else:
+                    response = client.post("/api/manager/conversations", json={
+                        "working_dir": ws_path, "prompt": "Follow-up only", "role": role,
+                        "conversation_id": CONV_ID, "worktree": False,
+                    })
+                    assert response.status_code == 200, response.text
+                assert follow_ups[-1]["content"][0]["text"] == "Follow-up only"
+        skill.write_text("UPDATED_LOCAL_POLICY")
+        assert "UPDATED_LOCAL_POLICY" in vibe_app.vibestore.manager_skill_prompt("task", "manager")
+    finally:
+        if previous is None:
+            os.environ.pop("VIBE_MANAGER_SKILL_FILE", None)
+        else:
+            os.environ["VIBE_MANAGER_SKILL_FILE"] = previous
+
+
+def test_conversation_summary_keeps_credentials_server_side():
+    response = client.get(f"/api/manager/conversations/{CONV_ID}")
+    assert response.status_code == 200, response.text
+    assert response.json()["execution_status"] == "running"
+    assert response.json()["model"] == "anthropic/claude-fable-5"
+    assert "api_key" not in response.text
 
 
 def test_start_chat_unknown_workspace():
@@ -228,6 +280,8 @@ if __name__ == "__main__":
     for fn in (
         test_skill_prompt,
         test_start_chat,
+        test_local_skill_reaches_only_manager_roles,
+        test_conversation_summary_keeps_credentials_server_side,
         test_start_chat_unknown_workspace,
         test_send_message,
         test_messages,
