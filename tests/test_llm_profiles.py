@@ -48,6 +48,7 @@ SETTINGS = {
         "tools": [],
     }
 }
+AGENT_REQUESTS = []
 
 
 class StubAgentServer(BaseHTTPRequestHandler):
@@ -69,6 +70,23 @@ class StubAgentServer(BaseHTTPRequestHandler):
             self.end_headers()
             return
         data = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self):  # noqa: N802
+        length = int(self.headers.get("Content-Length", "0"))
+        body = json.loads(self.rfile.read(length) or b"{}")
+        AGENT_REQUESTS.append((self.path, body))
+        if self.path == "/api/conversations":
+            response = {"id": body["conversation_id"]}
+        else:
+            self.send_response(404)
+            self.end_headers()
+            return
+        data = json.dumps(response).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -171,11 +189,11 @@ def test_manager_prompt_discovers_profiles():
     assert "## Model selection for workers" in prompt
     assert f"{mod.VIBECTL} profiles" in prompt
     assert "high effort" in prompt and "low effort" in prompt
-    assert "active default" in prompt and "omit `--profile`" in prompt
+    assert "active default" in prompt and "omit the profile flag" in prompt
     assert "never invent" in prompt.lower()
     assert "user's choice wins" in prompt.lower()
     assert "gpt-" not in prompt and "Anthropic" not in prompt
-    assert "--profile" in prompt
+    assert "--agent-profile" in prompt and "--profile" in prompt
     print("ok: manager discovers live profiles without provider-specific tiers")
 
 
@@ -193,6 +211,46 @@ def test_cli_discovers_arbitrary_and_changing_profiles():
         assert json.loads(result.stdout) == PROFILES
         PROFILES.update(profiles=[], active_profile=None)
         assert mod.vibestore.llm_profiles() == PROFILES
+    finally:
+        PROFILES.update(original)
+
+
+def test_cli_agent_profile_selection_preserves_ticket_choice_and_default():
+    mod = _load_automation(os.environ["VIBE_AGENT_SERVER"])
+    mod.vibestore.write_board("ws-test", {"tickets": [
+        {"id": "ticket-choice", "llm_profile": "gpt-5.6-sol"},
+    ]})
+
+    def dispatch(*extra):
+        result = subprocess.run(
+            [sys.executable, mod.VIBECTL, "dispatch", "--prompt", "do it",
+             "--no-worktree", *extra],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        path, body = AGENT_REQUESTS[-1]
+        assert path == "/api/conversations"
+        return body["agent_settings"]["llm"]["model"]
+
+    original = json.loads(json.dumps(PROFILES))
+    try:
+        PROFILES.update(
+            profiles=[{"name": "custom / local alias", "model": "another-provider/model"}],
+            active_profile="custom / local alias",
+        )
+        discovered = subprocess.run(
+            [sys.executable, mod.VIBECTL, "profiles"],
+            capture_output=True, text=True, check=True,
+        )
+        assert json.loads(discovered.stdout) == PROFILES
+        assert dispatch("--agent-profile", "custom alias #?") == "other-provider/custom"
+        assert dispatch("--profile", "custom alias #?") == "other-provider/custom"
+
+        PROFILES.update(original)
+        assert dispatch(
+            "--agent-profile", "custom alias #?", "--ticket", "ticket-choice",
+        ) == "openai/gpt-5.6-sol"
+        assert dispatch() == SETTINGS["agent_settings"]["llm"]["model"]
     finally:
         PROFILES.update(original)
 
@@ -235,6 +293,7 @@ if __name__ == "__main__":
     test_agent_settings_unknown_profile_400()
     test_manager_prompt_discovers_profiles()
     test_cli_discovers_arbitrary_and_changing_profiles()
+    test_cli_agent_profile_selection_preserves_ticket_choice_and_default()
     test_profile_names_are_encoded_as_path_segments()
     test_manager_prompt_note_style_rule()
     test_manager_prompt_one_conversation_per_ticket()
