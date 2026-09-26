@@ -54,10 +54,12 @@ checkout as part of deployment.
 
 ## Portability and local policy
 
-- Generic manager prompts discover profiles through `vibectl.py profiles`, select
-  by capability/cost/effort, and preserve explicit user choices. No provider or
-  profile allowlist belongs in published source. Empty/unknown discovery uses the
-  active default for new workers and retains the current model for follow-ups.
+- Generic manager prompts discover LLM profiles through `vibectl.py llm-profiles`
+  (`profiles` remains its legacy alias) and launch-time agent profiles through
+  `agent-profiles`. `--llm-profile`/legacy `--profile` select or switch a model;
+  `--agent-profile` resolves a live agent name to `agent_profile_id` only for new
+  conversations. Agent profiles cannot switch on follow-up. Preserve explicit
+  ticket LLM choices, and keep provider/profile allowlists out of published source.
 - `automation.vibestore.manager_skill_prompt` loads optional operator context
   from `<sidecar-root>/skills/manager/SKILL.md` (default App data root), or
   `VIBE_MANAGER_SKILL_FILE`; empty override disables it. Only manager/manager_chat
@@ -67,9 +69,11 @@ checkout as part of deployment.
   that private local skill. Read it when deploying here. Other installations
   provide their own gateway adapter; never infer its hostname, ports or auth.
 - Service URLs and credential paths are explicit backend configuration. CLI
-  configs carry URLs/paths, not keys. Profile discovery exposes name/model only;
-  settings/profile credentials remain backend-only. Conversation summaries use
-  the shared allowlisted API; manager chat never fetches credential exports.
+  configs carry URLs/paths, not keys. LLM discovery exposes name/model; agent
+  discovery exposes stable id, name, kind, revision and profile references only.
+  Materialized settings and credentials remain backend-only. Conversation
+  summaries use the shared allowlisted API; manager chat never fetches credential
+  exports.
 - Persisted `push_mode="main"` is a compatibility value meaning direct push to
   the actual remote default branch, not a branch named main. Discover the
   remote HEAD at delivery time. Operator-rendered nginx/systemd examples are

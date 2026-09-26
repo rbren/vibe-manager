@@ -1,11 +1,10 @@
-"""Model-selection (LLM profile) tests — plain script, no pytest.
+"""Distinct agent/LLM profile tests — plain script, no pytest.
 
 Run with the service venv:
     python3 tests/test_llm_profiles.py
 Stubs the agent server via VIBE_AGENT_SERVER so nothing live is touched.
-Covers: the /api/manager/llm-profiles proxy, agent_settings llm injection for
-a chosen profile (with usage_id preservation), unknown-profile 400s, and the
-model-selection section of the manager prompt in automation/main.py.
+Covers separate discovery, agent_profile_id launches, LLM settings/switching,
+ticket precedence, compatibility aliases and manager guidance.
 """
 
 from __future__ import annotations
@@ -35,6 +34,17 @@ PROFILES = {
     ],
     "active_profile": "gpt-5.6-sol",
 }
+CODEX_PROFILE_ID = "c2394b3d-cdc2-4550-a238-510c8bff6011"
+OPENHANDS_PROFILE_ID = "6070d578-5c17-47e3-ad29-50b510fe885d"
+AGENT_PROFILES = {
+    "profiles": [
+        {"id": CODEX_PROFILE_ID, "name": "codex", "agent_kind": "acp", "revision": 1,
+         "llm_profile_ref": None, "mcp_server_refs": None},
+        {"id": OPENHANDS_PROFILE_ID, "name": "openhands-custom", "agent_kind": "openhands",
+         "revision": 2, "llm_profile_ref": "gpt-5.6-sol", "mcp_server_refs": []},
+    ],
+    "active_agent_profile_id": CODEX_PROFILE_ID,
+}
 SOL_CONFIG = {
     "model": "openai/gpt-5.6-sol",
     "api_key": "gAAAAA-encrypted",
@@ -55,6 +65,8 @@ class StubAgentServer(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         if self.path == "/api/profiles":
             body = PROFILES
+        elif self.path == "/api/agent-profiles":
+            body = AGENT_PROFILES
         elif self.path == "/api/profiles/gpt-5.6-sol":
             body = {"name": "gpt-5.6-sol", "config": dict(SOL_CONFIG)}
         elif self.path == "/api/profiles/" + quote("custom alias #?", safe=""):
@@ -82,6 +94,8 @@ class StubAgentServer(BaseHTTPRequestHandler):
         AGENT_REQUESTS.append((self.path, body))
         if self.path == "/api/conversations":
             response = {"id": body["conversation_id"]}
+        elif self.path.endswith("/switch_profile") or self.path.endswith("/events"):
+            response = {"ok": True}
         else:
             self.send_response(404)
             self.end_headers()
@@ -122,6 +136,13 @@ def test_llm_profiles_endpoint_proxies_agent_server():
     assert "must-not-leak" not in json.dumps(d)
     assert "gAAAAA" not in json.dumps(d)  # never leaks secrets
     print("ok: /api/manager/llm-profiles proxies the agent server profile list")
+
+
+def test_agent_profiles_endpoint_proxies_agent_server():
+    r = client.get("/api/manager/agent-profiles")
+    assert r.status_code == 200, r.text
+    assert r.json() == AGENT_PROFILES
+    print("ok: /api/manager/agent-profiles proxies distinct agent choices")
 
 
 def test_agent_settings_default_untouched():
@@ -186,15 +207,16 @@ def test_manager_prompt_discovers_profiles():
     mod = _load_automation("http://127.0.0.1:1")
     ws = {"max_concurrent": 2, "push_mode": "main"}
     prompt = mod.build_manager_prompt(ws, [])
-    assert "## Model selection for workers" in prompt
-    assert f"{mod.VIBECTL} profiles" in prompt
+    assert "## Profile selection for workers" in prompt
+    assert f"{mod.VIBECTL} llm-profiles" in prompt
+    assert f"{mod.VIBECTL} agent-profiles" in prompt
     assert "high effort" in prompt and "low effort" in prompt
-    assert "active default" in prompt and "omit the profile flag" in prompt
+    assert "launch-only" in prompt
     assert "never invent" in prompt.lower()
     assert "user's choice wins" in prompt.lower()
     assert "gpt-" not in prompt and "Anthropic" not in prompt
-    assert "--agent-profile" in prompt and "--profile" in prompt
-    print("ok: manager discovers live profiles without provider-specific tiers")
+    assert "--agent-profile" in prompt and "--llm-profile" in prompt and "--profile" in prompt
+    print("ok: manager distinguishes live agent and LLM profile catalogs")
 
 
 def test_cli_discovers_arbitrary_and_changing_profiles():
@@ -202,57 +224,143 @@ def test_cli_discovers_arbitrary_and_changing_profiles():
     listed = mod.vibestore.llm_profiles()
     assert listed == vibe_app._llm_profiles()
     assert "must-not-leak" not in json.dumps(listed)
-    original = json.loads(json.dumps(PROFILES))
-    try:
-        PROFILES.update(profiles=[{"name": "custom / local alias", "model": "another-provider/model"}],
-                        active_profile="custom / local alias")
-        result = subprocess.run([sys.executable, mod.VIBECTL, "profiles"],
+    assert mod.vibestore.agent_profiles() == AGENT_PROFILES
+
+    for command in ("llm-profiles", "profiles"):
+        result = subprocess.run([sys.executable, mod.VIBECTL, command],
                                 capture_output=True, text=True, check=True)
-        assert json.loads(result.stdout) == PROFILES
-        PROFILES.update(profiles=[], active_profile=None)
-        assert mod.vibestore.llm_profiles() == PROFILES
+        assert json.loads(result.stdout) == listed
+    result = subprocess.run([sys.executable, mod.VIBECTL, "agent-profiles"],
+                            capture_output=True, text=True, check=True)
+    assert json.loads(result.stdout) == AGENT_PROFILES
+
+    original = json.loads(json.dumps(AGENT_PROFILES))
+    try:
+        AGENT_PROFILES.update(
+            profiles=[{"id": OPENHANDS_PROFILE_ID, "name": "nightly-agent",
+                       "agent_kind": "openhands", "revision": 9,
+                       "llm_profile_ref": None, "mcp_server_refs": None}],
+            active_agent_profile_id=OPENHANDS_PROFILE_ID,
+        )
+        result = subprocess.run([sys.executable, mod.VIBECTL, "agent-profiles"],
+                                capture_output=True, text=True, check=True)
+        assert json.loads(result.stdout) == AGENT_PROFILES
     finally:
-        PROFILES.update(original)
+        AGENT_PROFILES.update(original)
 
 
-def test_cli_agent_profile_selection_preserves_ticket_choice_and_default():
+def test_cli_dispatch_keeps_agent_and_llm_profiles_distinct():
     mod = _load_automation(os.environ["VIBE_AGENT_SERVER"])
     mod.vibestore.write_board("ws-test", {"tickets": [
         {"id": "ticket-choice", "llm_profile": "gpt-5.6-sol"},
     ]})
 
-    def dispatch(*extra):
+    def dispatch(*extra, ok=True):
+        before = len(AGENT_REQUESTS)
         result = subprocess.run(
             [sys.executable, mod.VIBECTL, "dispatch", "--prompt", "do it",
-             "--no-worktree", *extra],
-            capture_output=True, text=True,
+             "--no-worktree", *extra], capture_output=True, text=True,
         )
+        if not ok:
+            assert result.returncode != 0
+            assert len(AGENT_REQUESTS) == before
+            return result.stderr
         assert result.returncode == 0, result.stderr
         path, body = AGENT_REQUESTS[-1]
         assert path == "/api/conversations"
-        return body["agent_settings"]["llm"]["model"]
+        return body
 
-    original = json.loads(json.dumps(PROFILES))
-    try:
-        PROFILES.update(
-            profiles=[{"name": "custom / local alias", "model": "another-provider/model"}],
-            active_profile="custom / local alias",
-        )
-        discovered = subprocess.run(
-            [sys.executable, mod.VIBECTL, "profiles"],
-            capture_output=True, text=True, check=True,
-        )
-        assert json.loads(discovered.stdout) == PROFILES
-        assert dispatch("--agent-profile", "custom alias #?") == "other-provider/custom"
-        assert dispatch("--profile", "custom alias #?") == "other-provider/custom"
+    body = dispatch("--agent-profile", "codex")
+    assert body["agent_profile_id"] == CODEX_PROFILE_ID
+    assert "agent_settings" not in body and "secrets_encrypted" not in body
 
-        PROFILES.update(original)
-        assert dispatch(
-            "--agent-profile", "custom alias #?", "--ticket", "ticket-choice",
-        ) == "openai/gpt-5.6-sol"
-        assert dispatch() == SETTINGS["agent_settings"]["llm"]["model"]
-    finally:
-        PROFILES.update(original)
+    body = dispatch("--llm-profile", "custom alias #?")
+    assert body["agent_settings"]["llm"]["model"] == "other-provider/custom"
+    assert "agent_profile_id" not in body
+    body = dispatch("--profile", "custom alias #?")
+    assert body["agent_settings"]["llm"]["model"] == "other-provider/custom"
+
+    body = dispatch("--agent-profile", "codex", "--ticket", "ticket-choice")
+    assert body["agent_settings"]["llm"]["model"] == "openai/gpt-5.6-sol"
+    assert "agent_profile_id" not in body
+    body = dispatch()
+    assert body["agent_settings"]["llm"]["model"] == SETTINGS["agent_settings"]["llm"]["model"]
+
+    error = dispatch("--agent-profile", "missing-agent", ok=False)
+    assert "unknown agent profile" in error and "codex" in error
+    error = dispatch("--agent-profile", "codex", "--llm-profile", "gpt-5.6-sol", ok=False)
+    assert "not both" in error
+
+
+def test_manager_api_keeps_agent_and_llm_profiles_distinct():
+    AGENT_REQUESTS.clear()
+    response = client.post("/api/manager/conversations", json={
+        "working_dir": str(TMP), "prompt": "agent", "worktree": False,
+        "agent_profile_id": CODEX_PROFILE_ID,
+    })
+    assert response.status_code == 200, response.text
+    _, body = AGENT_REQUESTS[-1]
+    assert body["agent_profile_id"] == CODEX_PROFILE_ID
+    assert "agent_settings" not in body
+
+    response = client.post("/api/manager/conversations", json={
+        "working_dir": str(TMP), "prompt": "llm", "worktree": False,
+        "llm_profile": "gpt-5.6-sol",
+    })
+    assert response.status_code == 200, response.text
+    _, body = AGENT_REQUESTS[-1]
+    assert body["agent_settings"]["llm"]["model"] == "openai/gpt-5.6-sol"
+    assert "agent_profile_id" not in body
+
+    AGENT_REQUESTS.clear()
+    response = client.post("/api/manager/conversations", json={
+        "working_dir": str(TMP), "prompt": "invalid", "worktree": False,
+        "conversation_id": "00000000-0000-0000-0000-000000000001",
+        "agent_profile_id": CODEX_PROFILE_ID,
+    })
+    assert response.status_code == 400 and "launch-only" in response.text
+    assert not AGENT_REQUESTS
+
+    response = client.post("/api/manager/conversations", json={
+        "working_dir": str(TMP), "prompt": "switch", "worktree": False,
+        "conversation_id": "00000000-0000-0000-0000-000000000001",
+        "llm_profile": "gpt-5.6-sol",
+    })
+    assert response.status_code == 200, response.text
+    assert AGENT_REQUESTS[0][0].endswith("/switch_profile")
+    assert AGENT_REQUESTS[0][1] == {"profile_name": "gpt-5.6-sol"}
+
+
+def test_cli_followup_switches_only_llm_profiles():
+    mod = _load_automation(os.environ["VIBE_AGENT_SERVER"])
+    mod.vibestore.write_board("ws-test", {"tickets": [
+        {"id": "ticket-choice", "llm_profile": "gpt-5.6-sol"},
+    ]})
+
+    def followup(*extra, ok=True):
+        AGENT_REQUESTS.clear()
+        result = subprocess.run(
+            [sys.executable, mod.VIBECTL, "followup", "00000000-0000-0000-0000-000000000001",
+             "--prompt", "continue", *extra], capture_output=True, text=True,
+        )
+        if not ok:
+            assert result.returncode != 0 and not AGENT_REQUESTS
+            return result.stderr
+        assert result.returncode == 0, result.stderr
+        return list(AGENT_REQUESTS)
+
+    requests = followup("--llm-profile", "custom alias #?")
+    assert requests[0][0].endswith("/switch_profile")
+    assert requests[0][1] == {"profile_name": "custom alias #?"}
+    assert requests[1][0].endswith("/events")
+    requests = followup("--profile", "gpt-5.6-sol")
+    assert requests[0][1] == {"profile_name": "gpt-5.6-sol"}
+    requests = followup("--ticket", "ticket-choice")
+    assert requests[0][1] == {"profile_name": "gpt-5.6-sol"}
+    requests = followup()
+    assert len(requests) == 1 and requests[0][0].endswith("/events")
+    error = followup("--agent-profile", "codex", ok=False)
+    assert "launch-only" in error
 
 
 def test_profile_names_are_encoded_as_path_segments():
@@ -288,13 +396,16 @@ def test_manager_prompt_one_conversation_per_ticket():
 
 if __name__ == "__main__":
     test_llm_profiles_endpoint_proxies_agent_server()
+    test_agent_profiles_endpoint_proxies_agent_server()
     test_agent_settings_default_untouched()
     test_agent_settings_profile_injection()
     test_agent_settings_unknown_profile_400()
     test_manager_prompt_discovers_profiles()
     test_cli_discovers_arbitrary_and_changing_profiles()
-    test_cli_agent_profile_selection_preserves_ticket_choice_and_default()
+    test_cli_dispatch_keeps_agent_and_llm_profiles_distinct()
+    test_manager_api_keeps_agent_and_llm_profiles_distinct()
+    test_cli_followup_switches_only_llm_profiles()
     test_profile_names_are_encoded_as_path_segments()
     test_manager_prompt_note_style_rule()
     test_manager_prompt_one_conversation_per_ticket()
-    print("all llm profile tests passed")
+    print("all agent and LLM profile tests passed")
